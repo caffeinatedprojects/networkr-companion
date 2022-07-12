@@ -23,18 +23,7 @@ fi
 
 acc_user=$1 
 acc_pass=$2 
-website_id=$3  
- 
-
-if ! type "zip" > /dev/null; then
-    echo 'Install zip' 
-    sudo apt-get install zip -qq
-fi
-
-if ! type "unzip" > /dev/null; then
-    echo 'Install unzip' 
-    sudo apt-get install unzip -qq
-fi 
+website_id=$3   
 
 if [ -f "/home/$acc_user" ]; then
     sudo userdel -r $acc_user
