@@ -24,7 +24,7 @@ echo $acc_user:$acc_pass | chpasswd
 echo '***** Created Hosting *******' 
 echo 'created folders' 
 sudo -u $acc_user -i --  mkdir -p /home/$acc_user/public_html 
-sudo -u $acc_user -i --  cp -a /home/networkr/template/. /home/$acc_user/ 
+sudo -u $acc_user -i --  cp -a /home/networkr/networkr-companion/template/. /home/$acc_user/ 
 
 
 FILE=/home/$acc_user/docker-compose.yml
