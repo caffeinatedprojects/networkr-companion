@@ -8,10 +8,10 @@ acc_user=$1
 acc_pass=$2 
 website_id=$3   
  
-if [ -f "/home/$acc_user" ]; then
+#if [ -f "/home/$acc_user" ]; then
     sudo userdel -r $acc_user
     sudo rm -rf /home/$acc_user/*
-fi 
+#fi 
 
 sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password
 echo $acc_user:$acc_pass | chpasswd 

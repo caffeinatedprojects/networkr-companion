@@ -23,29 +23,7 @@ fi
 
 acc_user=$1 
 acc_pass=$2 
-website_id=$3   
-
-if [ -f "/home/$acc_user" ]; then
-    sudo userdel -r $acc_user
-    sudo rm -rf /home/$acc_user/*
-fi
-   
-sudo rm -rf /home/testsite002affeinat161new/*
-sudo userdel -r testsite002affeinat161new 
-
-sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password
-echo $acc_user:$acc_pass | chpasswd 
-# usermod -aG sudo $acc_user 
-# sudo usermod -aG www-data $acc_user
-# sudo chown -R $acc_user:www-data /home/$acc_user
-# sudo chown -R www-data:www-data /home/$acc_user
-# sudo chmod -R 774 /home/$acc_user  
-
-echo '***** Created Hosting *******' 
-echo 'created folders' 
-sudo -u $acc_user -i --  mkdir -p /home/$acc_user/public_html 
-sudo -u $acc_user -i --  cp -a /home/networkr/template/. /home/$acc_user/ 
-
+website_id=$3  
 
 FILE=/home/$acc_user/docker-compose.yml
 
