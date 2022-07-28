@@ -1,4 +1,4 @@
-#!/bin/bashwhile IFS="" read -r p || [ -n "$p" ] 
+#!/bin/bash
 
 acc_user=$1  
 
@@ -28,9 +28,7 @@ echo '--------- Script Start ---------'
 
 # fi 
 
-## $1 : user_name 
-
-acc_user=$1
+## $1 : user_name  
 
 sudo docker-compose -f /home/$acc_user/docker-compose.yml up -d 
 
