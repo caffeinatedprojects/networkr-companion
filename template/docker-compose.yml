@@ -37,7 +37,7 @@ services:
         max-size: ${LOGGING_OPTIONS_MAX_SIZE:-200k}
 
   wpcli:
-    image: wordpress:${CLI_VERSION:cli-php8.1}
+    image: wordpress:${CLI_VERSION}
     volumes:
       - ${SITE_FILES}:${CONTAINER_SITE_FILES:-/var/www/html}
     environment:
