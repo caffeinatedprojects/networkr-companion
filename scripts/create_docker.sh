@@ -28,13 +28,11 @@ echo '--------- Script Start ---------'
 
 # fi 
 
-## $1 : user_name
-## $2 : user_pass
-## $3 : website_id  
+## $1 : user_name 
 
-acc_user=$1 
-acc_pass=$2 
-website_id=$3  
+acc_user=$1
+
+sudo docker-compose -f /home/$acc_user/docker-compose.yml up -d 
 
 FILE=/home/$acc_user/docker-compose.yml
 
