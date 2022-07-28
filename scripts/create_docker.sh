@@ -11,6 +11,14 @@ exec &> /home/$acc_user/logs/create_docker_processing
 
 echo '--------- Script Start ---------' 
 
+FILE=/home/$acc_user/.env
+
+if test -f "$FILE"; then
+    sudo chown $acc_user:$acc_user $FILE
+else
+    echo "Environment file not found"
+fi
+
 # Confirm .env file exists
 # if [ -f .env ]; then
 
