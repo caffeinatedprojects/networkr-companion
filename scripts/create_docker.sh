@@ -35,10 +35,9 @@ fi
 #     rm .env.tmp .env.tmp2
 
 # fi 
-
-## $1 : user_name  
-
-sudo docker-compose -f /home/$acc_user/docker-compose.yml up -d 
+ 
+cd /home/$acc_user/
+sudo docker-compose up -d 
 
 FILE=/home/$acc_user/docker-compose.yml
 
