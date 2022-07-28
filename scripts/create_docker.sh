@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/bashwhile IFS="" read -r p || [ -n "$p" ] 
 
 acc_user=$1  
 
 mkdir -p /home/$acc_user/logs
 sudo rm -rf /home/$acc_user/logs/create_docker_processing
-sudo rm -rf /home/$acc_user/logs/create_docker__done
+sudo rm -rf /home/$acc_user/logs/create_docker_done
 
 touch /home/$acc_user/logs/create_docker_processing
 exec &> /home/$acc_user/logs/create_docker_processing
@@ -45,4 +45,3 @@ mv /home/$acc_user/logs/create_docker_processing /home/$acc_user/logs/create_doc
 echo '--------- Script END ---------'
 
 exit
-
