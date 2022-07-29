@@ -37,9 +37,9 @@ fi
 # fi 
  
 cd /home/$acc_user/
-sudo docker-compose up -d 
+sudo docker compose up -d 
 
-FILE=/home/$acc_user/docker-compose.yml
+FILE=/home/$acc_user/data/site/wp-config.php
 
 if test -f "$FILE"; then
     echo "hosting account created"
