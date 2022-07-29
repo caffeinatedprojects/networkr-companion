@@ -1,4 +1,4 @@
-version: '3'
+version: '3.6'
 
 services:
   
@@ -38,9 +38,11 @@ services:
 
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
-    image: wordpress:${CLI_VERSION}
+    build: ./wpcli/
+    image: wpcli
     volumes:
       - ${SITE_FILES}:${CONTAINER_SITE_FILES:-/var/www/html}
+    working_dir: /var/www/html
     environment:
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
@@ -50,25 +52,13 @@ services:
       WORDPRESS_DOMAIN: ${PRIMARY_URL}
       WORDPRESS_USER: ${WP_ADMIN_USER}
       WORDPRESS_PASS: ${WP_ADMIN_TEMP_PASS}
-      WORDPRESS_MAIL: ${WP_ADMIN_MAIL}
-    # vstm: This is required to run wordpress-cli with the same
-    # user-id as wordpress. This way there are no permission problems
-    # when running the cli
-    user: xfs
-    # vstm: The sleep 10 is required so that the command is run after
-    # mysql is initialized. Depending on your machine this might take
-    # longer or it can go faster.
-    command: >
-      /bin/sh -c '
-      sleep 10;
-      wp core install --path="/var/www/html" --url="${PRIMARY_URL}" --title="${WP_TITLE}" --admin_user=${WP_ADMIN_USER} --admin_password=${WP_ADMIN_TEMP_PASS} --admin_email=${WP_ADMIN_MAIL}
-      '
+      WORDPRESS_MAIL: ${WP_ADMIN_MAIL} 
+    user: xfs 
     depends_on:
       - db 
       - wp 
     entrypoint: wp  
 
 networks:
-   default:
-     external:
+   default: 
        name: ${NETWORK}
