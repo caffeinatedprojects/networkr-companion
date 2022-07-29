@@ -8,29 +8,29 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_wp_autoconfig
     entrypoint: sh -c "/wait && make -f /scripts/Makefile"
     volumes:
-      - ${WORDPRESS_DATA_DIR:-./wordpress}:/var/www/html
+      - ${SITE_FILES}:${CONTAINER_SITE_FILES:-/var/www/html}
     working_dir: /var/www/html
     depends_on:
-      - wordpress
-      - mysql
+      - wp
+      - db
     environment:
       # Waiting for MySQL and wordpress -------------------
-      - WAIT_HOSTS=mysql:3306,wordpress:80
+      - WAIT_HOSTS=db:3306,wp:80
       - WAIT_BEFORE_HOSTS=${WAIT_BEFORE_HOSTS:-30}
       - WAIT_AFTER_HOSTS=${WAIT_AFTER_HOSTS:-15}
       - WAIT_HOSTS_TIMEOUT=${WAIT_HOSTS_TIMEOUT:-300}
       - WAIT_SLEEP_INTERVAL=${WAIT_SLEEP_INTERVAL:-30}
       - WAIT_HOST_CONNECT_TIMEOUT=${WAIT_HOST_CONNECT_TIMEOUT:-30}
       # Wordpress configuration -----------------------------
-      - WORDPRESS_LOCALE=${WORDPRESS_LOCALE:-en_US}
-      - WORDPRESS_DB_NAME=${COMPOSE_PROJECT_NAME:-wordpress}
-      - WORDPRESS_DB_HOST=${WORDPRESS_DB_HOST:-mysql}
-      - WORDPRESS_DB_USER=${DATABASE_USER:-root}
-      - WORDPRESS_DB_PASSWORD=${DATABASE_PASSWORD:-password}
-      - WORDPRESS_WEBSITE_TITLE=${WORDPRESS_WEBSITE_TITLE}
-      - WORDPRESS_WEBSITE_URL=${WORDPRESS_WEBSITE_URL:-"http://localhost"}
-      - WORDPRESS_WEBSITE_URL_WITHOUT_HTTP=${WORDPRESS_WEBSITE_URL:-localhost}
-      - WORDPRESS_WEBSITE_POST_URL_STRUCTURE=${WORDPRESS_WEBSITE_POST_URL_STRUCTURE:-"/blog/%postname%/"}
-      - WORDPRESS_ADMIN_USER=${WORDPRESS_ADMIN_USER:-wordpress}
-      - WORDPRESS_ADMIN_PASSWORD=${WORDPRESS_ADMIN_PASSWORD:-wordpress}
-      - WORDPRESS_ADMIN_EMAIL=${WORDPRESS_ADMIN_EMAIL:-"test@example.com"}
+      - WORDPRESS_LOCALE=${WP_LOCALE:-en_US}
+      - WORDPRESS_DB_NAME=${MYSQL_DATABASE}
+      - WORDPRESS_DB_HOST=db
+      - WORDPRESS_DB_USER=${MYSQL_USER}
+      - WORDPRESS_DB_PASSWORD=${MYSQL_PASSWORD}
+      - WORDPRESS_WEBSITE_TITLE=${WP_TITLE}
+      - WORDPRESS_WEBSITE_URL=${PRIMARY_URL:-"http://localhost"}
+      - WORDPRESS_WEBSITE_URL_WITHOUT_HTTP=${URL_WITHOUT_HTTP:-localhost}
+      - WORDPRESS_WEBSITE_POST_URL_STRUCTURE=${WP_PERMA_STRUCTURE:-"/blog/%postname%/"}
+      - WORDPRESS_ADMIN_USER=${WP_ADMIN_USER:-wordpress}
+      - WORDPRESS_ADMIN_PASSWORD=${WP_ADMIN_TEMP_PASS:-wordpress}
+      - WORDPRESS_ADMIN_EMAIL=${WP_ADMIN_MAIL:-"test@example.com"}

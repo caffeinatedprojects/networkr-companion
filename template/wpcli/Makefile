@@ -2,13 +2,13 @@ install: configure
 
 configure:
 
-	@echo "⚙️ Configuring Wordpress parameters..."
+	@echo "⚙️ Configuring Wordpress parameters..." 
 	wp core install \
-		--url=${URL_WITHOUT_HTTP} \
-		--title=$(WP_TITLE) \
-		--admin_user=${WP_ADMIN_USER} \
-		--admin_password=${WP_ADMIN_TEMP_PASS} \
-		--admin_email=${WP_ADMIN_MAIL}
+		--url=${WORDPRESS_WEBSITE_URL_WITHOUT_HTTP} \
+		--title=$(WORDPRESS_WEBSITE_TITLE) \
+		--admin_user=${WORDPRESS_ADMIN_USER} \
+		--admin_password=${WORDPRESS_ADMIN_PASSWORD} \
+		--admin_email=${WORDPRESS_ADMIN_EMAIL}
 
-	wp option update siteurl ${PRIMARY_URL}
-	wp rewrite structure $(WP_PERMA_STRUCTURE)
+	wp option update siteurl ${WORDPRESS_WEBSITE_URL}
+	wp rewrite structure $(WORDPRESS_WEBSITE_POST_URL_STRUCTURE)
