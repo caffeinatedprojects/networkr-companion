@@ -37,14 +37,14 @@ fi
 # fi 
  
 cd /home/$acc_user/
-sudo docker compose up -d 
+sudo make install
 
 FILE=/home/$acc_user/data/site/wp-config.php
 
 if test -f "$FILE"; then
-    echo "hosting account created"
+    echo "wordpress site installed"
 else
-    echo "hosting creation failed"
+    echo "wordpress install failed"
 fi
 
 mv /home/$acc_user/logs/create_docker_processing /home/$acc_user/logs/create_docker__done
