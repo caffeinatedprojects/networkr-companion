@@ -10,9 +10,10 @@ configure:
 install: start
 	docker compose -f docker-compose.yml -f wp-auto-config.yml run --rm wp-auto-config
 
-clean: down
+clean: 
 	@echo "💥 Removing related folders/files..."
 	@rm -rf  mysql/* wordpress/*
+	down
 
 reset: clean
 
