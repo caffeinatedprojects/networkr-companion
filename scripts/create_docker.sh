@@ -1,4 +1,4 @@
-#!/bin/bashwhile IFS="" read -r p || [ -n "$p" ] 
+#!/bin/bash
 
 acc_user=$1  
 
@@ -7,7 +7,9 @@ sudo rm -rf /home/$acc_user/logs/create_docker_processing
 sudo rm -rf /home/$acc_user/logs/create_docker_done
 
 touch /home/$acc_user/logs/create_docker_processing
-exec 1> >(tee -a "/home/$acc_user/logs/create_docker_processing")
+#exec &> /home/$acc_user/logs/create_docker_processing
+
+{
 
 echo '--------- Script Start ---------' 
 
@@ -32,6 +34,8 @@ fi
 
 echo '--------- Script END ---------'
 
+
+} | tee -a /home/$acc_user/logs/create_docker_processing
 
 sleep 1
 mv /home/$acc_user/logs/create_docker_processing /home/$acc_user/logs/create_docker_done
