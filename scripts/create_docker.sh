@@ -2,9 +2,8 @@
 
 acc_user=$1  
 
+sudo rm -rf /home/$acc_user/logs 
 mkdir -p /home/$acc_user/logs
-sudo rm -rf /home/$acc_user/logs/create_docker_processing
-sudo rm -rf /home/$acc_user/logs/create_docker_done
 
 touch /home/$acc_user/logs/create_docker_processing
 #exec &> /home/$acc_user/logs/create_docker_processing
@@ -18,7 +17,7 @@ FILE=/home/$acc_user/.env
 if test -f "$FILE"; then
     sudo chown $acc_user:$acc_user $FILE
 else
-    echo "Environment file not found"
+    echo "Environment file not found"s
 fi 
  
 cd /home/$acc_user/
