@@ -15,7 +15,7 @@ echo '--------- Script Start ---------'
 FILE=/home/$acc_user/.env
 
 if test -f "$FILE"; then
-    
+    echo "Environment found"
 else
     echo "Environment file not found"
 fi 
