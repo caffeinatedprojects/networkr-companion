@@ -5,18 +5,19 @@ down:
 	docker compose down 
 
 touchdown:
-	touch logs/wordpress-installed
+	@touch logs/wordpress-installed
 
 configure:
 	docker compose -f docker-compose.yml -f wp-auto-config.yml run --rm wp-auto-config
 
 install: start
 	docker compose -f docker-compose.yml -f wp-auto-config.yml run --rm wp-auto-config
-	touch logs/wordpress-installed
 	
-clean: down
+clean: 
 	@echo "💥 Removing related folders/files..."
-	@rm -rf  mysql/* wordpress/*
+	@rm -rf  data/db/ data/site/
 
 reset: clean
 
+siteurl: 
+	docker compose run --quiet-pull --rm wpcli option get siteurl
