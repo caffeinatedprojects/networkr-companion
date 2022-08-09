@@ -15,9 +15,9 @@ echo '--------- Script Start ---------'
 FILE=/home/$acc_user/.env
 
 if test -f "$FILE"; then
-    sudo chown $acc_user:$acc_user $FILE
+    
 else
-    echo "Environment file not found"s
+    echo "Environment file not found"
 fi 
  
 cd /home/$acc_user/
