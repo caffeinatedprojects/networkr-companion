@@ -1,18 +1,42 @@
-## $1 : domain_name  
+#!/bin/bash
 
-echo '***** Delete Hosting *******' 
+acc_user=$1  
 
-echo 'docker down' 
-sudo docker-compose down -f /home/$1/docker-compose.yml 
+sudo rm -rf /home/$acc_user/logs 
+mkdir -p /home/$acc_user/logs
 
-echo 'delete user' 
-sudo userdel $1
+touch /home/$acc_user/logs/delete_hosting_processing
+#exec &> /home/$acc_user/logs/delete_hosting_processing
 
-echo 'delete folders' 
-sudo rm -rf /home/$1  
- 
-if [ ! -d "/home/$1 " ]; then
-    echo 'website deleted: ' $1
+{
+
+echo '--------- Script Start ---------' 
+
+FILE=/home/$acc_user/.env
+
+if test -f "$FILE"; then
+    sudo chown $acc_user:$acc_user $FILE
 else
-    echo 'deletion failed: ' $1 
+    echo "Environment file not found"s
 fi 
+ 
+cd /home/$acc_user/
+sudo make down
+sudo make clear
+
+FILE=/home/$acc_user/data/site/wp-config.php
+
+if test -f "$FILE"; then
+    echo "wordpress delete failed"
+else
+    echo "wordpress delete"
+fi
+
+echo '--------- Script END ---------'
+
+
+} | tee -a /home/$acc_user/logs/delete_hosting_processing
+
+sleep 1
+mv /home/$acc_user/logs/delete_hosting_processing /home/$acc_user/logs/delete_hosting_done
+exit 0
