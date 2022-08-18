@@ -13,6 +13,8 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    networks: 
+      - ${NETWORK}
 
   wp:
     depends_on:
@@ -35,6 +37,9 @@ services:
     logging:
       options:
         max-size: ${LOGGING_OPTIONS_MAX_SIZE:-200k}
+    networks:
+      - proxy
+      - ${NETWORK}
 
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
@@ -57,7 +62,9 @@ services:
     depends_on:
       - db 
       - wp 
-    entrypoint: wp  
+    entrypoint: wp
+    networks: 
+      - ${NETWORK}  
 
 networks:
    default: 
