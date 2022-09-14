@@ -1,4 +1,3 @@
 #!/bin/bash
 
-sudo dpkg-reconfigure tzdata
-
+sudo timedatectl set-timezone Europe/London
