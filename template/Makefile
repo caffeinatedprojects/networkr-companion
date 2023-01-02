@@ -1,23 +1,103 @@
+include .env
+
+COLOUR_GREEN=\033[0;32m
+COLOUR_RED=\033[0;31m
+COLOUR_BLUE=\033[0;34m
+COLOUR_END=\033[0m
+
 start:
-	docker compose up -d --build 
+	docker-compose up -d --build 
 
 down:
-	docker compose down 
+	docker-compose down
 
-touchdown:
-	@touch logs/wordpress-installed
+wpinfo:
+	docker-compose run --rm $(CONTAINER_CLI_NAME) --info
 
-configure:
-	docker compose -f docker-compose.yml -f wp-auto-config.yml run --rm wp-auto-config
-
-install: start
-	docker compose -f docker-compose.yml -f wp-auto-config.yml run --rm wp-auto-config
+install: 
+	start
+	setup
 	
 clean: 
 	@echo "💥 Removing related folders/files..."
-	@rm -rf  data/db/ data/site/
+	@rm -rf  data/db/* data/site/* data/backup/*
 
 reset: clean
 
 siteurl: 
-	docker compose run --quiet-pull --rm wpcli option get siteurl
+	docker-compose run --rm $(CONTAINER_CLI_NAME) option get siteurl
+
+setup:
+	docker exec $(CONTAINER_CLI_NAME) wp core install \
+	  --path="/var/www/html" \
+	  --url="$(PRIMARY_URL)" \
+	  --title=$(WP_TITLE) \
+	  --admin_user="$(WP_ADMIN_USER)" \
+	  --admin_password="$(WP_ADMIN_TEMP_PASS)" \
+	  --admin_email="$(WP_ADMIN_MAIL)"
+
+	docker exec $(CONTAINER_CLI_NAME) wp rewrite structure $(WP_PERMA_STRUCTURE)
+
+config-list:
+	docker exec $(CONTAINER_CLI_NAME) wp config list 
+
+db-import:
+	@echo "$(COLOUR_BLUE)Importing MYSQL File: $(MYSQL_DATABASE)$(COLOUR_END)"
+	docker exec $(CONTAINER_DB_NAME) \
+	  sh -c 'exec mysql -uroot -p"$(MYSQL_ROOT_PASSWORD)" $(MYSQL_DATABASE)' \
+	  > data/temp/mysql.sql
+
+db-export:
+	@echo "$(COLOUR_BLUE)Exporting Database: $(MYSQL_DATABASE)$(COLOUR_END)"
+	@docker exec $(CONTAINER_DB_NAME) \
+	  sh -c 'exec mysqldump --databases $(MYSQL_DATABASE) -uroot -p"$(MYSQL_ROOT_PASSWORD)"' \
+	  > data/mysql.sql
+
+backup: db-export
+	@echo "$(COLOUR_BLUE)Compressing Back Up $(COLOUR_END)"
+	@tar -czf archive.tar.gz data/site data/mysql.sql
+	@mv archive.tar.gz data/backup/archive.tar.gz
+	@echo "$(COLOUR_BLUE)Tinying Up $(COLOUR_END)"
+	@rm -f data/mysql.sql
+	@find data/backup/ -type f -mtime +7 -name '*.gz' -execdir rm -- '{}' \;
+	@echo "$(COLOUR_GREEN)Backup Successful$(COLOUR_END)"
+
+import: db-import 
+	mv data/temp/site/wp-content/* data/site/wp-content/
+	rm -rf data/temp/* 
+
+theme-list:
+	docker exec $(CONTAINER_CLI_NAME) wp theme list --format=json
+
+# theme-update:
+# 	docker exec $(CONTAINER_CLI_NAME) wp theme update --all
+
+# theme-install:
+# 	docker exec $(CONTAINER_CLI_NAME) wp theme install $$theme --activate
+
+theme-activate:
+	docker exec $(CONTAINER_CLI_NAME) wp theme activate $$theme
+
+theme-delete:
+	rm -rf data/site/wp-content/themes/$$theme
+
+theme-disable:
+	docker exec $(CONTAINER_CLI_NAME) wp theme disable $$theme  
+
+plugin-list:
+	docker exec $(CONTAINER_CLI_NAME) wp plugin list --format=json
+
+# plugin-update:
+# 	docker exec $(CONTAINER_CLI_NAME) wp plugin update --all
+
+# plugin-install:
+# 	docker exec $(CONTAINER_CLI_NAME) wp plugin install $$plugin --activate
+
+plugin-activate:
+	docker exec $(CONTAINER_CLI_NAME) wp plugin activate $$plugin
+
+plugin-delete:
+	rm -rf data/site/wp-content/plugins/$$plugin
+
+plugin-disable:
+	docker exec $(CONTAINER_CLI_NAME) wp plugin disable $$plugin

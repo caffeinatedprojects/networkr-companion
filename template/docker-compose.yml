@@ -1,20 +1,17 @@
-version: '3.6'
+version: '3'
 
 services:
-  
   db:
     container_name: ${CONTAINER_DB_NAME}
     image: ${DB_IMAGE:-mariadb}:${DB_VERSION:-latest}
     restart: unless-stopped
     volumes:
-      - ${DB_FILES}:${CONTAINER_DB_FILES:-/var/lib/mysql}
+      - ${DB_FILES}:/var/lib/mysql
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    networks: 
-      - ${NETWORK}
 
   wp:
     depends_on:
@@ -23,7 +20,7 @@ services:
     image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-latest}
     restart: unless-stopped
     volumes:
-      - ${SITE_FILES}:${CONTAINER_SITE_FILES:-/var/www/html}
+      - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
     environment:
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
@@ -33,39 +30,27 @@ services:
       WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
       VIRTUAL_HOST: ${DOMAINS}
       LETSENCRYPT_HOST: ${DOMAINS}
-      LETSENCRYPT_EMAIL: ${WP_ADMIN_MAIL}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     logging:
       options:
         max-size: ${LOGGING_OPTIONS_MAX_SIZE:-200k}
-    networks:
-      - proxy
-      - ${NETWORK}
 
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
-    build: ./wpcli/
-    image: wpcli
+    depends_on:
+      - db
+      - wp
+    image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli}
+    command: tail -f /dev/null
     volumes:
-      - ${SITE_FILES}:${CONTAINER_SITE_FILES:-/var/www/html}
-    working_dir: /var/www/html
+      - ${SITE_FILES}:/var/www/html 
     environment:
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
-      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
-      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
-      WORDPRESS_DOMAIN: ${PRIMARY_URL}
-      WORDPRESS_USER: ${WP_ADMIN_USER}
-      WORDPRESS_PASS: ${WP_ADMIN_TEMP_PASS}
-      WORDPRESS_MAIL: ${WP_ADMIN_MAIL} 
-    user: xfs 
-    depends_on:
-      - db 
-      - wp 
-    entrypoint: wp
-    networks: 
-      - ${NETWORK}  
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD} 
 
 networks:
-   default: 
+   default:
+     external:
        name: ${NETWORK}
