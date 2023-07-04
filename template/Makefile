@@ -15,8 +15,14 @@ wpinfo:
 	docker-compose run --rm $(CONTAINER_CLI_NAME) --info
 
 install: 
-	start
-	setup
+	docker-compose up -d --build 
+	docker exec $(CONTAINER_CLI_NAME) wp core install \
+	  --path="/var/www/html" \
+	  --url="$(PRIMARY_URL)" \
+	  --title=$(WP_TITLE) \
+	  --admin_user="$(WP_ADMIN_USER)" \
+	  --admin_password="$(WP_ADMIN_TEMP_PASS)" \
+	  --admin_email="$(WP_ADMIN_MAIL)"
 	
 clean: 
 	@echo "💥 Removing related folders/files..."

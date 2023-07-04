@@ -5,6 +5,11 @@ services:
     container_name: ${CONTAINER_DB_NAME}
     image: ${DB_IMAGE:-mariadb}:${DB_VERSION:-latest}
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: ${MYSQL_CPU_LIMIT:-'0.5'}
+          memory: ${MYSQL_MEMORY_LIMIT:-300M}
     volumes:
       - ${DB_FILES}:/var/lib/mysql
     environment:
@@ -12,6 +17,11 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    logging:
+      driver: ${DB_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${DB_LOG_MAX_SIZE:-1m}
+        max-file: ${DB_LOG_MAX_FILE:-10}
 
   wp:
     depends_on:
@@ -19,6 +29,14 @@ services:
     container_name: ${CONTAINER_SITE_NAME}
     image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-latest}
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: ${SITE_CPU_LIMIT:-'0.5'}
+          memory: ${SITE_MEMORY_LIMIT:-300M}
+    networks:
+      - proxy
+      - wordpress-db-net
     volumes:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
@@ -32,8 +50,10 @@ services:
       LETSENCRYPT_HOST: ${DOMAINS}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     logging:
+      driver: ${SITE_LOG_DRIVER:-json-file}
       options:
-        max-size: ${LOGGING_OPTIONS_MAX_SIZE:-200k}
+        max-size: ${SITE_LOG_MAX_SIZE:-2m}
+        max-file: ${SITE_LOG_MAX_FILE:-10}
 
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
@@ -48,9 +68,11 @@ services:
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
-      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD} 
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX} 
 
 networks:
    default:
      external:
        name: ${NETWORK}
+  wordpress-db-net:
