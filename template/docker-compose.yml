@@ -35,8 +35,7 @@ services:
           cpus: ${SITE_CPU_LIMIT:-'0.5'}
           memory: ${SITE_MEMORY_LIMIT:-300M}
     networks:
-      - proxy
-      - wordpress-db-net
+      - proxy 
     volumes:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
@@ -70,9 +69,8 @@ services:
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
       WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX} 
-
+ 
 networks:
-   default:
-     external:
-       name: ${NETWORK}
-  wordpress-db-net:
+  proxy:
+    external: true 
+
