@@ -27,7 +27,7 @@ services:
 
   docker-wordpress-new-site:
     depends_on:
-      - db
+      - docker-wordpress-new-db
     container_name: ${CONTAINER_SITE_NAME}
     image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-latest}
     restart: unless-stopped
@@ -60,8 +60,8 @@ services:
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
     depends_on:
-      - db
-      - wp
+      - docker-wordpress-new-db
+      - docker-wordpress-new-site
     image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli}
     command: tail -f /dev/null
     volumes:
