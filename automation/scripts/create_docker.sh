@@ -21,14 +21,14 @@ else
 fi 
  
 cd /home/$acc_user/
-sudo make install
+sudo make start
 
-FILE=/home/$acc_user/data/site/wp-config.php
+FILE=/home/$acc_user/data/site/wp-blog-header.php
 
 if test -f "$FILE"; then
-    echo "wordpress site installed"
+    echo "docker created"
 else
-    echo "wordpress install failed"
+    echo "docker failed"
 fi
 
 echo '--------- Script END ---------'
