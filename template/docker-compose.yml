@@ -1,7 +1,7 @@
 version: '3'
 
 services:
-  docker-wordpress-new-db:
+  mysql:
     container_name: ${CONTAINER_DB_NAME}
     image: ${DB_IMAGE:-mariadb}:${DB_VERSION:-latest}
     restart: unless-stopped
@@ -10,8 +10,8 @@ services:
         limits:
           cpus: ${MYSQL_CPU_LIMIT:-'0.5'}
           memory: ${MYSQL_MEMORY_LIMIT:-300M}
-    networks:
-      - docker-wordpress-db-net
+    networks: 
+      - wordpress-vpc
     volumes:
       - ${DB_FILES}:/var/lib/mysql
     environment:
@@ -25,9 +25,9 @@ services:
         max-size: ${DB_LOG_MAX_SIZE:-1m}
         max-file: ${DB_LOG_MAX_FILE:-10}
 
-  docker-wordpress-new-site:
+  wp:
     depends_on:
-      - docker-wordpress-new-db
+      - mysql
     container_name: ${CONTAINER_SITE_NAME}
     image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-latest}
     restart: unless-stopped
@@ -38,12 +38,12 @@ services:
           memory: ${SITE_MEMORY_LIMIT:-300M}
     networks:
       - proxy 
-      - docker-wordpress-db-net
+      - wordpress-vpc 
     volumes:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
     environment:
-      WORDPRESS_DB_HOST: ${DOCKER_WORDPRESS_DB_HOST:-docker-wordpress-new-db}:3306
+      WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
@@ -60,23 +60,23 @@ services:
   wpcli:
     container_name: ${CONTAINER_CLI_NAME}
     depends_on:
-      - docker-wordpress-new-db
-      - docker-wordpress-new-site
+      - mysql
+      - wp
     image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli}
     command: tail -f /dev/null
+    networks: 
+      - wordpress-vpc
     volumes:
       - ${SITE_FILES}:/var/www/html 
     environment:
-      WORDPRESS_DB_HOST: ${DOCKER_WORDPRESS_DB_HOST:-docker-wordpress-new-db}:3306
+      WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
-      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
-    networks:
-      - docker-wordpress-db-net 
+      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX} 
  
 networks:
   proxy:
-    external: true
-  docker-wordpress-db-net: 
-
+    external: true 
+  wordpress-vpc:
+    driver: bridge 
