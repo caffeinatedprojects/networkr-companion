@@ -1,7 +1,7 @@
 version: '3'
 
 services:
-  db:
+  docker-wordpress-new-db:
     container_name: ${CONTAINER_DB_NAME}
     image: ${DB_IMAGE:-mariadb}:${DB_VERSION:-latest}
     restart: unless-stopped
@@ -10,6 +10,8 @@ services:
         limits:
           cpus: ${MYSQL_CPU_LIMIT:-'0.5'}
           memory: ${MYSQL_MEMORY_LIMIT:-300M}
+    networks:
+      - docker-wordpress-db-net
     volumes:
       - ${DB_FILES}:/var/lib/mysql
     environment:
@@ -23,7 +25,7 @@ services:
         max-size: ${DB_LOG_MAX_SIZE:-1m}
         max-file: ${DB_LOG_MAX_FILE:-10}
 
-  wp:
+  docker-wordpress-new-site:
     depends_on:
       - db
     container_name: ${CONTAINER_SITE_NAME}
@@ -36,6 +38,7 @@ services:
           memory: ${SITE_MEMORY_LIMIT:-300M}
     networks:
       - proxy 
+      - docker-wordpress-db-net
     volumes:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
@@ -68,9 +71,12 @@ services:
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
-      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX} 
+      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
+    networks:
+      - docker-wordpress-db-net 
  
 networks:
   proxy:
-    external: true 
+    external: true
+  docker-wordpress-db-net: 
 
