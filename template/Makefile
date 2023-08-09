@@ -47,6 +47,18 @@ setup:
 config-list:
 	docker exec $(CONTAINER_CLI_NAME) wp config list 
 
+# make changedomain domain_old='hotalen-okumura-jewe18.cloudfyrestaging.co.uk' domain_old_full='https://hotalen-okumura-jewe18.cloudfyrestaging.co.uk'
+changedomain:
+	@echo " Replacing $(COLOUR_RED)$(domain_old)$(COLOUR_END) >>> $(COLOUR_GREEN)$(PRIMARY_URL)$(COLOUR_END)"
+	docker exec $(CONTAINER_CLI_NAME) wp option update home "$(PRIMARY_URL)" 
+	docker exec $(CONTAINER_CLI_NAME) wp option update siteurl "$(PRIMARY_URL)"
+	@echo "$(COLOUR_GREEN) Find Replace Full Domian $(COLOUR_END)"
+	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old_full)" "$(PRIMARY_URL)" --skip-columns=guid 
+	@echo "$(COLOUR_GREEN) Find Replace Domian $(COLOUR_END)"
+	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old)" "$(URL_WITHOUT_HTTP)" --skip-columns=guid
+	@echo "$(COLOUR_GREEN)Docker Rebuild$(COLOUR_END)"
+	docker-compose up -d --build  
+
 db-import:
 	@echo "$(COLOUR_BLUE)Importing MYSQL File: $(MYSQL_DATABASE)$(COLOUR_END)"
 	docker exec $(CONTAINER_DB_NAME) \
