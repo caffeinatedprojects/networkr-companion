@@ -6,20 +6,20 @@ COLOUR_BLUE=\033[0;34m
 COLOUR_END=\033[0m
 
 start:
-	docker-compose up -d --build 
+	docker compose up -d --build 
 
 down:
-	docker-compose down
+	docker compose down
 
 restart:
-	docker-compose down
-	docker-compose up -d --build
+	docker compose down
+	docker compose up -d --build
 
 wpinfo:
-	docker-compose run --rm $(CONTAINER_CLI_NAME) --info
+	 docker compose run --rm $(CONTAINER_CLI_NAME) --info
 
 install: 
-	docker-compose up -d --build 
+	docker compose up -d --build 
 	docker exec $(CONTAINER_CLI_NAME) wp core install \
 	  --path="/var/www/html" \
 	  --url="$(PRIMARY_URL)" \
@@ -58,8 +58,8 @@ changedomain:
 	docker exec $(CONTAINER_CLI_NAME) wp option update siteurl "$(PRIMARY_URL)" 
 	@echo "$(COLOUR_GREEN) Find Replace Domian $(COLOUR_END)"
 	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old)" "$(URL_WITHOUT_HTTP)" --skip-columns=guid
-	docker-compose down
-	docker-compose up -d --build 
+	docker compose down
+	docker compose up -d --build 
 
 db-import:
 	@echo "$(COLOUR_BLUE)Importing MYSQL File: $(MYSQL_DATABASE)$(COLOUR_END)"
