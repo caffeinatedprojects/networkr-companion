@@ -1,5 +1,6 @@
 #!/bin/bash
 
+## $1 : acc_user
 acc_user=$1  
 
 sudo rm -rf /home/$acc_user/logs 
