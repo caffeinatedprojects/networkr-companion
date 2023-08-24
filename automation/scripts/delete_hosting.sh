@@ -2,14 +2,6 @@
 
 acc_user=$1  
 
-sudo rm -rf /home/$acc_user/logs 
-mkdir -p /home/$acc_user/logs
-
-touch /home/$acc_user/logs/delete_hosting_processing
-#exec &> /home/$acc_user/logs/delete_hosting_processing
-
-{
-
 echo '--------- Script Start ---------' 
 
 FILE=/home/$acc_user/.env
@@ -34,11 +26,7 @@ else
     echo "wordpress delete"
 fi
 
-echo '--------- Script END ---------'
-
-
-} | tee -a /home/$acc_user/logs/delete_hosting_processing
-
+echo '--------- Script END ---------' 
+ 
 sleep 1
-mv /home/$acc_user/logs/delete_hosting_processing /home/$acc_user/logs/delete_hosting_done
 exit 0
