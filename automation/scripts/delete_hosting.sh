@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# sudo bash /home/networkr/networkr-companion/automation/scripts/delete_hosting.sh liffick-stahler-meig1
+
 acc_user=$1  
 
 echo '--------- Script Start ---------' 
@@ -15,7 +17,7 @@ fi
 cd /home/$acc_user/
 sudo make down
 sudo make clean
-sudo deluser $acc_user --remove-all-files 
+sudo deluser $acc_user  
 sudo rm -rf /home/$acc_user 
 
 FILE=/home/$acc_user/data/site/wp-config.php
