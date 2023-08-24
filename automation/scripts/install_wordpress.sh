@@ -21,7 +21,7 @@ else
 fi 
  
 cd /home/$acc_user/
-sudo make setup
+sudo make install
 
 FILE=/home/$acc_user/data/site/wp-config.php
 

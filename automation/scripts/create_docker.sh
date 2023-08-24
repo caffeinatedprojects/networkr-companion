@@ -23,6 +23,8 @@ fi
 cd /home/$acc_user/
 sudo make start
 
+sleep 10
+
 FILE=/home/$acc_user/data/site/wp-blog-header.php
 
 if test -f "$FILE"; then

@@ -14,12 +14,7 @@ website_id=$3
 #fi 
 
 sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password
-echo $acc_user:$acc_pass | chpasswd 
-# usermod -aG sudo $acc_user 
-# sudo usermod -aG www-data $acc_user
-# sudo chown -R $acc_user:www-data /home/$acc_user
-# sudo chown -R www-data:www-data /home/$acc_user
-# sudo chmod -R 774 /home/$acc_user  
+echo $acc_user:$acc_pass | chpasswd  
 
 echo '***** Created Hosting *******' 
 echo 'created folders' 
