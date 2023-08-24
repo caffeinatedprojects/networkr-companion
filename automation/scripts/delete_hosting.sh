@@ -22,7 +22,9 @@ fi
  
 cd /home/$acc_user/
 sudo make down
-sudo make clear
+sudo make clean
+sudo deluser $acc_user --remove-all-files 
+sudo rm -rf /home/$acc_user 
 
 FILE=/home/$acc_user/data/site/wp-config.php
 
