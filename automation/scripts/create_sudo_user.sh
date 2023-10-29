@@ -17,7 +17,13 @@ echo $acc_user:$acc_pass | chpasswd
 sudo usermod -aG sudo $acc_user 
 
 if getent passwd $acc_user > /dev/null 2>&1; then
+
+    sudo mkdir /home/$acc_user/.ssh
+    sudo touch /home/$acc_user/.ssh/authorized_keys 
     echo "the user exists"
+
 else
+
     echo "the user does not exist"
+
 fi
