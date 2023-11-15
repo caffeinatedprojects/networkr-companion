@@ -17,7 +17,12 @@ echo $acc_user:$acc_pass | chpasswd
 sudo usermod -aG sudo $acc_user 
 
 if getent passwd $acc_user > /dev/null 2>&1; then
+
+    sudo rsync --archive --chown=$acc_user:$acc_user /home/networkr/.ssh /home/$acc_user 
     echo "the user exists"
+
 else
+
     echo "the user does not exist"
+
 fi
