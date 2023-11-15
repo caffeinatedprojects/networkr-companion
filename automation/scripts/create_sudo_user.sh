@@ -18,7 +18,7 @@ sudo usermod -aG sudo $acc_user
 
 if getent passwd $acc_user > /dev/null 2>&1; then
 
-    sudo rsync --archive --chown=$acc_user:$acc_user /home/networkr/.ssh /home/$acc_user 
+    sudo rsync --archive --chown=$acc_user:$acc_user /home/networkr/.ssh /home/$acc_user
     echo "the user exists"
 
 else
