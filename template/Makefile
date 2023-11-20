@@ -75,8 +75,9 @@ db-export:
 
 backup: db-export
 	@echo "$(COLOUR_BLUE)Compressing Back Up $(COLOUR_END)"
-	@tar -czf archive.tar.gz data/site data/mysql.sql
-	@mv archive.tar.gz data/backup/archive.tar.gz
+	@tar -czf backup.tar.gz data/site data/mysql.sql -group=$(COMPOSE_PROJECT_NAME) --owner=$(COMPOSE_PROJECT_NAME)
+	@mv backup.tar.gz data/backup/backup-$$(date '+%Y-%m-%d').tar.gz
+	@chown $(COMPOSE_PROJECT_NAME):$(COMPOSE_PROJECT_NAME) data/backup/backup-$$(date '+%Y-%m-%d').tar.gz
 	@echo "$(COLOUR_BLUE)Tinying Up $(COLOUR_END)"
 	@rm -f data/mysql.sql
 	@find data/backup/ -type f -mtime +7 -name '*.gz' -execdir rm -- '{}' \;
