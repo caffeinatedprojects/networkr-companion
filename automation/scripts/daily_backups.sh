@@ -26,6 +26,7 @@ do
 	SERVERID=$(echo $OUTPUT_JSON | jq ".[$i].server_id" | sed s'/\"//g')
 	THEPATH=/home/$USER
 	FILE='backup-'$(date '+%Y-%m-%d')'.tar.gz'
+	ARCHIVE_FILE='backup-'$NAME'-'$(date '+%Y-%m-%d')'.tar.gz'
 	
 	echo '----------- Starting Back Up : ' $USER ' -----------'
 	
@@ -36,7 +37,7 @@ do
 
 	echo 'Moving to Storage: '$backup_file  
 
-	s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/USERID/$YEAR/$MONTH/SERVERID/$FILE
+	s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/$USERID/$YEAR/$MONTH/$SERVERID/$ARCHIVE_FILE
    
 	rm  -r -f $THEPATH/backup/* 
 
