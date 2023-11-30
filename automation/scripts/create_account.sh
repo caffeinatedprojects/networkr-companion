@@ -17,9 +17,12 @@ sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --dis
 echo $acc_user:$acc_pass | chpasswd  
 
 echo '***** Created Hosting *******' 
-echo 'created folders' 
-sudo cp -a /home/networkr/networkr-companion/template/. /home/$acc_user/ 
+echo 'created folders'  
+sudo cp -a /home/networkr/networkr-companion/template/. /home/$acc_user/
+
+sudo mkdir -p /home/$acc_user/.ssh 
 sudo cp -a /home/networkr/.ssh/authorized_keys /home/$acc_user/.ssh/authorized_keys
+sudo chown -R networkr:networkr /home/$acc_user/.ssh/* s
 sudo chown -R $acc_user:$acc_user /home/$acc_user/data/* 
 sudo rm /home/$acc_user/.env-example 
 
