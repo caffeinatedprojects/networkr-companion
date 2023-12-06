@@ -23,7 +23,8 @@ echo 'created folders'
 sudo cp -a /home/networkr/networkr-companion/template/. /home/$acc_user/
 sudo rsync --archive --chown=$acc_user:$acc_user /home/networkr/.ssh /home/$acc_user
 
-sudo chown -R $acc_user:$acc_user /home/$acc_user/data/* 
+sudo chown -R $acc_user:$acc_user /home/$acc_user/* 
+sudo chown -R $acc_user:$acc_user /home/$acc_user/ 
 sudo rm /home/$acc_user/.env-example 
 
 FILE=/home/$acc_user/docker-compose.yml
