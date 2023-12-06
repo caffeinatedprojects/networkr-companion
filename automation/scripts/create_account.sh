@@ -17,6 +17,7 @@ sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --dis
 echo $acc_user:$acc_pass | chpasswd  
 sudo usermod -aG sshuser $acc_user
 
+
 echo '***** Created Hosting *******' 
 echo 'created folders'  
 
@@ -25,6 +26,8 @@ sudo rsync --archive --chown=$acc_user:$acc_user /home/networkr/.ssh /home/$acc_
 
 sudo chown -R $acc_user:$acc_user /home/$acc_user/* 
 sudo chown -R $acc_user:$acc_user /home/$acc_user/ 
+sudo chmod 700 /home/$acc_user
+
 sudo rm /home/$acc_user/.env-example 
 
 FILE=/home/$acc_user/docker-compose.yml
