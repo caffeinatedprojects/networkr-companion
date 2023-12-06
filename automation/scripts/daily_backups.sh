@@ -32,14 +32,13 @@ do
 	
 	echo 'Name: ' $NAME
 
-	cd /home/$USER/
-	sudo make backup 
+ 	sudo make backup --directory=/home/$USER
 
 	echo 'Moving to Storage: '$backup_file  
 
-	s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/$USERID/$YEAR/$MONTH/$SERVERID/$ARCHIVE_FILE
+	sudo s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/$USERID/$YEAR/$MONTH/$SERVERID/$ARCHIVE_FILE
    
-	rm  -r -f $THEPATH/backup/* 
+	sudo rm  -r -f $THEPATH/backup/* 
 
 	echo '------------------------------'
 

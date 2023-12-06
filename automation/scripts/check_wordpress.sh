@@ -19,9 +19,8 @@ if test -f "$FILE"; then
 else
     echo "Environment file not found"
 fi 
- 
-cd /home/$acc_user/
-sudo make siteurl 
+
+sudo make siteurl --directory=/home/$acc_user
 
 echo '--------- Script END ---------'
 

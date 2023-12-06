@@ -14,9 +14,8 @@ else
     echo "Environment file not found"
 fi 
  
-cd /home/$acc_user/
-sudo make down
-sudo make clean
+sudo make down --directory=/home/$acc_user
+sudo make clean --directory=/home/$acc_user
 sudo deluser $acc_user  
 sudo rm -rf /home/$acc_user 
 

@@ -19,9 +19,8 @@ if test -f "$FILE"; then
 else
     echo "Environment file not found"
 fi 
- 
-cd /home/$acc_user/
-sudo make start
+  
+sudo make start  --directory=/home/$acc_user
 
 sleep 10
 

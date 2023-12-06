@@ -13,7 +13,6 @@ acc_pass=$2
 
 sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password
 echo $acc_user:$acc_pass | chpasswd  
-
 sudo usermod -aG sudo $acc_user 
 
 if getent passwd $acc_user > /dev/null 2>&1; then

@@ -21,8 +21,7 @@ else
     echo "Environment file not found"
 fi 
  
-cd /home/$acc_user/
-sudo make install
+sudo make install --directory=/home/$acc_user
 
 FILE=/home/$acc_user/data/site/wp-config.php
 
