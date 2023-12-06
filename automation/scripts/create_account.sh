@@ -15,6 +15,7 @@ website_id=$3
 
 sudo adduser $acc_user --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password
 echo $acc_user:$acc_pass | chpasswd  
+sudo usermod -aG sshuser $acc_user
 
 echo '***** Created Hosting *******' 
 echo 'created folders'  
