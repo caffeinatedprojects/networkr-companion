@@ -13,7 +13,7 @@ echo '--------- Script Start ---------'
 
 FILE=/home/$acc_user/.env
 
-if test -f "$FILE"; then
+if sudo test -f "$FILE"; then
     sudo chown $acc_user:$acc_user $FILE
 else
     echo "Environment file not found"
@@ -25,7 +25,7 @@ sleep 10
 
 FILE=/home/$acc_user/data/site/wp-blog-header.php
 
-if test -f "$FILE"; then
+if sudo test -f "$FILE"; then
     echo "docker created"
 else
     echo "docker failed"

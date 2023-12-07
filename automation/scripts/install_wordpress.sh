@@ -14,7 +14,7 @@ echo '--------- Script Start ---------'
 
 FILE=/home/$acc_user/.env
 
-if test -f "$FILE"; then
+if sudo test -f "$FILE"; then
     echo "Environment found"
 else
     echo "Environment file not found"
@@ -24,7 +24,7 @@ sudo make install --directory=/home/$acc_user
 
 FILE=/home/$acc_user/data/site/wp-config.php
 
-if test -f "$FILE"; then
+if sudo test -f "$FILE"; then
     echo "wordpress site installed"
 else
     echo "wordpress install failed"

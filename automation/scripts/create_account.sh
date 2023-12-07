@@ -32,7 +32,7 @@ sudo rm /home/$acc_user/.env-example
 
 FILE=/home/$acc_user/docker-compose.yml
 
-if test -f "$FILE"; then
+if sudo test -f "$FILE"; then
     echo "hosting account created"
 else
     echo "hosting creation failed"
