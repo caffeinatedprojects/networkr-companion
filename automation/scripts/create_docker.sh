@@ -2,11 +2,10 @@
 
 acc_user=$1  
 
-sudo rm -rf /home/$acc_user/logs 
-mkdir -p /home/$acc_user/logs
+sudo rm -rf ~/logs/$acc_user
+mkdir -p ~/logs/$acc_user
 
-touch /home/$acc_user/logs/create_docker_processing
-#exec &> /home/$acc_user/logs/create_docker_processing
+touch ~/logs/$acc_user/create_docker_processing 
 
 {
 
@@ -20,7 +19,7 @@ else
     echo "Environment file not found"
 fi 
   
-sudo make start  --directory=/home/$acc_user
+sudo make start --directory=/home/$acc_user
 
 sleep 10
 
@@ -35,8 +34,8 @@ fi
 echo '--------- Script END ---------'
 
 
-} | tee -a /home/$acc_user/logs/create_docker_processing
+} | tee -a ~/logs/$acc_user/create_docker_processing
 
 sleep 1
-mv /home/$acc_user/logs/create_docker_processing /home/$acc_user/logs/create_docker_done
+mv ~/logs/$acc_user/create_docker_processing ~/logs/$acc_user/create_docker_done
 exit 0

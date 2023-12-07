@@ -2,10 +2,10 @@
 
 acc_user=$1  
 
-sudo rm -rf /home/$acc_user/logs 
-mkdir -p /home/$acc_user/logs
+sudo rm -rf ~/logs/$acc_user/ 
+mkdir -p ~/logs/$acc_user/
 
-touch /home/$acc_user/logs/check_wordpress_processing
+touch ~/logs/$acc_user/logs/check_wordpress_processing
 #exec &> /home/$acc_user/logs/check_wordpress_processing
 
 {
@@ -19,14 +19,16 @@ if test -f "$FILE"; then
 else
     echo "Environment file not found"
 fi 
-
+ 
 sudo make siteurl --directory=/home/$acc_user
 
 echo '--------- Script END ---------'
 
 
-} | tee -a /home/$acc_user/logs/check_wordpress_processing
+} | tee -a ~/logs/$acc_user/check_wordpress_processing
 
 sleep 1
-mv /home/$acc_user/logs/check_wordpress_processing /home/$acc_user/logs/check_wordpress_done
+
+mv ~/logs/$acc_user/check_wordpress_processing ~/logs/$acc_user/check_wordpress_done
+
 exit 0
