@@ -3,7 +3,7 @@
 echo '----- Start Daily Back Up ----' 
 date '+%d/%m/%Y_%H:%M:%S'  
 
-OUTPUT_JSON=$(cat /home/networkr/data/users.json | jq '.backups') 
+OUTPUT_JSON=$(cat /home/networkr/networkr-companion/logs/users.json | jq '.backups') 
 echo $OUTPUT_JSON
 
 LENGTH_NAMES=$(echo $OUTPUT_JSON | jq length)
