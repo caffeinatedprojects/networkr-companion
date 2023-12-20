@@ -10,12 +10,12 @@ LENGTH_NAMES=$(echo $OUTPUT_JSON | jq length)
 
 YEAR=$(date +%Y)
 MONTH=$(date +%m)
-DAY=$(date +%d) 
 
 echo $(date +%Y)
 echo $(date +%m) 
 
 i=0
+
 while [ $i -ne $LENGTH_NAMES ]
 do
 
@@ -38,7 +38,7 @@ do
 
 	echo 'Moving to Storage: '$backup_file  
 
-	sudo s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/$USERID/$YEAR/$MONTH/$DAY/$WEBSITEID/$SERVERID/$ARCHIVE_FILE
+	sudo s3cmd put $THEPATH/data/backup/$FILE s3://caffeinated-media/pressillion/backups/$SERVERID/$USERID/$WEBSITEID/$YEAR/$MONTH/$ARCHIVE_FILE
    
 	sudo rm  -r -f $THEPATH/backup/* 
 
