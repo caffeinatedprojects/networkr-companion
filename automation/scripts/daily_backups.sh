@@ -28,7 +28,7 @@ do
 	WEBSITEID=$(echo $OUTPUT_JSON | jq ".[$i].website_id" | sed s'/\"//g')
 	THEPATH=/home/$USER
 	FILE='backup-'$(date '+%Y-%m-%d')'.tar.gz'
-	ARCHIVE_FILE='backup_'$NAME'_'$(date '+%Y-%m-%d')'.tar.gz'
+	ARCHIVE_FILE='backup_'$NAME'_'$(date '+%Y-%m-%d_%H:%M:%S')'.tar.gz'
 	
 	echo '----------- Starting Back Up : ' $USER ' -----------'
 	
