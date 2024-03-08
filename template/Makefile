@@ -53,6 +53,7 @@ config-list:
 
 # make changedomain domain_old='hidaway.co.uk'
 changedomain:
+	docker compose up -d --build 
 	@echo " Replacing $(COLOUR_RED)$(domain_old)$(COLOUR_END) >>> $(COLOUR_GREEN)$(URL_WITHOUT_HTTP)"$(COLOUR_END)
 	docker exec $(CONTAINER_CLI_NAME) wp option update home "$(PRIMARY_URL)" 
 	docker exec $(CONTAINER_CLI_NAME) wp option update siteurl "$(PRIMARY_URL)" 
