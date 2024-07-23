@@ -1,9 +1,11 @@
+# Load variables from .env file
 include .env
+export 
 
 COLOUR_GREEN=\033[0;32m
 COLOUR_RED=\033[0;31m
 COLOUR_BLUE=\033[0;34m
-COLOUR_END=\033[0m
+COLOUR_END=\033[0m 
 
 start:
 	docker compose up -d --build 
@@ -65,14 +67,12 @@ changedomain:
 db-import:
 	@echo "$(COLOUR_BLUE)Importing MYSQL File: $(MYSQL_DATABASE)$(COLOUR_END)"
 	docker exec $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysql -$(MYSQL_ROOT_PASSWORD) -p$(MYSQL_ROOT_PASSWORD) $(MYSQL_DATABASE)' \
-	  > data/temp/mysql.sql
+	  sh -c 'exec mysql -$(MYSQL_ROOT_PASSWORD) -p$(MYSQL_ROOT_PASSWORD) $(MYSQL_DATABASE)' > data/temp/mysql.sql
 
 db-export:
 	@echo "$(COLOUR_BLUE)Exporting Database: $(MYSQL_DATABASE)$(COLOUR_END)"
-	docker exec $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysqldump --databases $(MYSQL_DATABASE) -u$(MYSQL_USER) -p$(MYSQL_PASSWORD)' \
-	  > $(CONTAINER_DB_NAME)-mysql.sql
+	docker exec $(CONTAINER_DB_NAME) mysqldump --databases $(MYSQL_DATABASE) -u$(MYSQL_USER) -p$(MYSQL_PASSWORD)' > $(CONTAINER_DB_NAME)-mysql.sql
+
 
 backup: db-export
 	@echo "$(COLOUR_BLUE)Compressing Back Up $(COLOUR_END)"
