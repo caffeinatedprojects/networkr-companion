@@ -65,14 +65,14 @@ changedomain:
 db-import:
 	@echo "$(COLOUR_BLUE)Importing MYSQL File: $(MYSQL_DATABASE)$(COLOUR_END)"
 	docker exec $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysql -uroot -p"$(MYSQL_ROOT_PASSWORD)" $(MYSQL_DATABASE)' \
+	  sh -c 'exec mysql -$(MYSQL_ROOT_PASSWORD) -p$(MYSQL_ROOT_PASSWORD) $(MYSQL_DATABASE)' \
 	  > data/temp/mysql.sql
 
 db-export:
 	@echo "$(COLOUR_BLUE)Exporting Database: $(MYSQL_DATABASE)$(COLOUR_END)"
-	@docker exec $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysqldump --databases $(MYSQL_DATABASE) -uroot -p"$(MYSQL_ROOT_PASSWORD)"' \
-	  > data/mysql.sql
+	docker exec $(CONTAINER_DB_NAME) \
+	  sh -c 'exec mysqldump --databases $(MYSQL_DATABASE) -u$(MYSQL_USER) -p$(MYSQL_PASSWORD)' \
+	  > $(CONTAINER_DB_NAME)-mysql.sql
 
 backup: db-export
 	@echo "$(COLOUR_BLUE)Compressing Back Up $(COLOUR_END)"
