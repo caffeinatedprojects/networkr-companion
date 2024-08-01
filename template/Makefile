@@ -1,6 +1,4 @@
-# Load variables from .env file
-include .env
-export 
+include .env 
 
 COLOUR_GREEN=\033[0;32m
 COLOUR_RED=\033[0;31m
@@ -71,17 +69,19 @@ db-import:
 
 db-export:
 	@echo "$(COLOUR_BLUE)Exporting Database: $(MYSQL_DATABASE)$(COLOUR_END)"
-	docker exec $(CONTAINER_DB_NAME) mysqldump --databases $(MYSQL_DATABASE) -u$(MYSQL_USER) -p$(MYSQL_PASSWORD)' > $(CONTAINER_DB_NAME)-mysql.sql
-
+	@rm -rf data/temp/*
+	@docker exec $(CONTAINER_DB_NAME) sh -c "exec mysqldump --databases $(MYSQL_DATABASE) -u'root' -p'$(MYSQL_ROOT_PASSWORD)'" > data/temp/mysql.sql
+	@echo "Backup saved to 'data/temp/mysql.sql'"
 
 backup: db-export
+	@cp -a data/site/wp-content/. data/temp/wp-content/
 	@echo "$(COLOUR_BLUE)Compressing Back Up $(COLOUR_END)"
-	@tar -czf backup.tar.gz data/site data/mysql.sql -group=$(COMPOSE_PROJECT_NAME) --owner=$(COMPOSE_PROJECT_NAME)
-	@mv backup.tar.gz data/backup/backup-$$(date '+%Y-%m-%d').tar.gz
-	@chown $(COMPOSE_PROJECT_NAME):$(COMPOSE_PROJECT_NAME) data/backup/backup-$$(date '+%Y-%m-%d').tar.gz
-	@echo "$(COLOUR_BLUE)Tinying Up $(COLOUR_END)"
-	@rm -f data/mysql.sql
-	@find data/backup/ -type f -mtime +7 -name '*.gz' -execdir rm -- '{}' \;
+	@tar -czvf data/backup/backup.tar.gz -C data/temp/ . -group=$(COMPOSE_PROJECT_NAME) --owner=$(COMPOSE_PROJECT_NAME)
+	@mv data/backup/backup.tar.gz data/backup/backup-$$(date '+%Y-%m-%d').tar.gz 
+	chown $(COMPOSE_PROJECT_NAME):$(COMPOSE_PROJECT_NAME) data/backup/backup-$$(date '+%Y-%m-%d').tar.gz
+	echo "$(COLOUR_BLUE)Tinying Up $(COLOUR_END)"
+	@rm -rf data/temp/*
+	find data/backup/ -type f -mtime +7 -name '*.gz' -execdir rm -- '{}' \;
 	@echo "$(COLOUR_GREEN)Backup Successful$(COLOUR_END)"
 
 import: db-import 
