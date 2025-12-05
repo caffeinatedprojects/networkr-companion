@@ -1,16 +1,16 @@
-version: '3'
+version: "3.8"
 
 services:
   mysql:
     container_name: ${CONTAINER_DB_NAME}
-    image: ${DB_IMAGE:-mariadb}:${DB_VERSION:-latest}
+    image: ${DB_IMAGE:-mysql}:${DB_VERSION:-8.0}
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: ${MYSQL_CPU_LIMIT:-0.5}
-          memory: ${MYSQL_MEMORY_LIMIT:-300M}
-    networks: 
+          cpus: ${DB_CPU_LIMIT:-0.5}
+          memory: ${DB_MEMORY_LIMIT:-300M}
+    networks:
       - wordpress-vpc
     volumes:
       - ${DB_FILES}:/var/lib/mysql
@@ -24,6 +24,9 @@ services:
       options:
         max-size: ${DB_LOG_MAX_SIZE:-1m}
         max-file: ${DB_LOG_MAX_FILE:-10}
+    ports:
+      # Host-only port for DB access via SSH tunnel
+      - "127.0.0.1:${DB_LOCAL_PORT:-0}:3306"
 
   wp:
     depends_on:
@@ -37,8 +40,8 @@ services:
           cpus: ${SITE_CPU_LIMIT:-0.5}
           memory: ${SITE_MEMORY_LIMIT:-300M}
     networks:
-      - proxy 
-      - wordpress-vpc 
+      - proxy
+      - wordpress-vpc
     volumes:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
@@ -64,19 +67,19 @@ services:
       - wp
     image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli}
     command: tail -f /dev/null
-    networks: 
+    networks:
       - wordpress-vpc
     volumes:
-      - ${SITE_FILES}:/var/www/html 
+      - ${SITE_FILES}:/var/www/html
     environment:
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
-      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX} 
- 
+      WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
+
 networks:
   proxy:
-    external: true 
+    external: true
   wordpress-vpc:
-    driver: bridge 
+    driver: bridge
