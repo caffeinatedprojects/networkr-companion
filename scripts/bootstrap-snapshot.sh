@@ -26,12 +26,27 @@ NETWORKR_UPDATE_CRON="0 3 * * *"   # daily 03:00
 # SSH / firewall
 SSH_PORT="22"
 
-# Base Docker images to pre-pull
 BASE_IMAGES=(
   "wordpress:php8.3-fpm"
   "wordpress:cli-php8.3"
   "mysql:8.0"
 )
+
+########################################
+# Function definitions MUST come
+# BEFORE we start using them
+########################################
+
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    log "ERROR: Script must be run as root."
+    exit 1
+  fi
+}
 
 ########################################
 # LOGGING SETUP
@@ -43,7 +58,7 @@ LOG_FILE="${LOG_DIR}/bootstrap-${TIMESTAMP}.log"
 
 mkdir -p "${LOG_DIR}"
 
-# Redirect ALL output (stdout + stderr) to both terminal and log file
+# Redirect all output to log + console
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 log "Bootstrap log started: ${LOG_FILE}"
