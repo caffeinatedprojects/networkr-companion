@@ -28,10 +28,25 @@ SSH_PORT="22"
 
 # Base Docker images to pre-pull
 BASE_IMAGES=(
-  "wordpress:php8.2-fpm"
-  "wordpress:cli-php8.2"
+  "wordpress:php8.3-fpm"
+  "wordpress:cli-php8.3"
   "mysql:8.0"
 )
+
+########################################
+# LOGGING SETUP
+########################################
+
+LOG_DIR="/home/${PRESSILION_USER}/networkr-companion/logs"
+TIMESTAMP="$(date +'%Y%m%d-%H%M%S')"
+LOG_FILE="${LOG_DIR}/bootstrap-${TIMESTAMP}.log"
+
+mkdir -p "${LOG_DIR}"
+
+# Redirect ALL output (stdout + stderr) to both terminal and log file
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+log "Bootstrap log started: ${LOG_FILE}"
 
 ########################################
 # Helpers
@@ -95,6 +110,7 @@ install_base_packages() {
     software-properties-common \
     zip \
     unzip \
+    make \
     tar \
     gzip \
     bzip2 \
@@ -144,6 +160,7 @@ install_docker() {
 
   systemctl enable docker
   systemctl start docker
+  
 }
 
 ########################################
@@ -168,6 +185,7 @@ setup_passwordless_sudo() {
 }
 
 harden_ssh() {
+
   log "Hardening SSH config..."
 
   local conf="/etc/ssh/sshd_config"
@@ -183,7 +201,16 @@ harden_ssh() {
   sed -ri 's/^#?UsePAM .*/UsePAM yes/' "${conf}"
   sed -ri 's/^#?X11Forwarding .*/X11Forwarding no/' "${conf}"
 
-  systemctl reload sshd
+  echo "[Bootstrap] Reloading SSH service..."
+
+  if systemctl list-unit-files | grep -q "^sshd.service"; then
+      sudo systemctl reload sshd
+  elif systemctl list-unit-files | grep -q "^ssh.service"; then
+      sudo systemctl reload ssh
+  else
+      echo "[WARN] Could not detect ssh or sshd service!"
+  fi
+
 }
 
 configure_firewall() {
