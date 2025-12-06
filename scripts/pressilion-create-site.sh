@@ -1,179 +1,192 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ========================================================================
-#   Pressilion — Create Site Script (Apache version)
-# ========================================================================
+PRESSILION_USER="networkr"
+NETWORKR_ROOT="/home/${PRESSILION_USER}/networkr-companion"
+TEMPLATE_ROOT="${NETWORKR_ROOT}/template"
+GROUP_ADMIN="pressadmin"
 
-RED="\033[31m"; GREEN="\033[32m"; YELLOW="\033[33m"; NC="\033[0m"
-ts() { printf "[%s] " "$(date +%s)"; }
-
-FORCE_INSTALL=false
-
-# ------------------------------------------------------------------------
-# Parse arguments
-# ------------------------------------------------------------------------
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --user) SITEUSER="$2"; shift;;
-        --website-id) WEBSITE_ID="$2"; shift;;
-        --domain) DOMAIN="$2"; shift;;
-        --letsencrypt-email) LETSENCRYPT_EMAIL="$2"; shift;;
-        --wp-admin-email) WP_ADMIN_MAIL="$2"; shift;;
-        --force-install) FORCE_INSTALL=true;;
-        *) echo "Unknown argument: $1"; exit 1;;
-    esac
-    shift
-done
-
-# Validate
-[[ -z "${SITEUSER:-}" ]] && { echo "Missing --user"; exit 1; }
-[[ -z "${WEBSITE_ID:-}" ]] && { echo "Missing --website-id"; exit 1; }
-[[ -z "${DOMAIN:-}" ]] && { echo "Missing --domain"; exit 1; }
-[[ -z "${LETSENCRYPT_EMAIL:-}" ]] && { echo "Missing --letsencrypt-email"; exit 1; }
-[[ -z "${WP_ADMIN_MAIL:-}" ]] && { echo "Missing --wp-admin-email"; exit 1; }
-
-HOMEDIR="/home/$SITEUSER"
-TEMPLATES="/home/networkr/networkr-companion/templates"
-
-DB_NAME="wp_${WEBSITE_ID}"
-DB_USER="wp_${WEBSITE_ID}_u"
-DB_PASS=$(openssl rand -hex 16)
-DB_ROOT_PASS=$(openssl rand -hex 16)
-WP_ADMIN_USER="admin"
-WP_ADMIN_TEMP_PASS=$(openssl rand -hex 12)
-COMPOSE_PROJECT_NAME="$SITEUSER"
-CONTAINER_DB_NAME="${SITEUSER}-db"
-CONTAINER_SITE_NAME="${SITEUSER}-wp"
-CONTAINER_CLI_NAME="${SITEUSER}-cli"
-DB_LOCAL_PORT=$((33060 + RANDOM % 200))
-
-rollback() {
-    echo -e "${YELLOW}Rolling back…${NC}"
-    docker compose -f "$HOMEDIR/docker-compose.yml" down || true
-    userdel -rf "$SITEUSER" || true
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
-trap rollback ERR
 
-# ========================================================================
-# Create Linux user
-# ========================================================================
-ts; echo -e "Creating Linux user '${GREEN}${SITEUSER}${NC}'…"
-id "$SITEUSER" >/dev/null 2>&1 || useradd -m "$SITEUSER"
-echo "${SITEUSER}:$(openssl rand -hex 4)" | chpasswd
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "This script must be run as root." >&2
+    exit 1
+  fi
+}
 
-# ========================================================================
-# Directory structure
-# ========================================================================
-ts; echo "Preparing directory structure…"
+usage() {
+  cat <<EOF
+Usage:
+  pressilion-create-site --user USERNAME --website-id ID --domain DOMAIN \\
+                         --letsencrypt-email EMAIL [--wp-admin-email EMAIL]
 
-mkdir -p "$HOMEDIR"/data/db
-mkdir -p "$HOMEDIR"/data/site
-mkdir -p "$HOMEDIR"/conf.d
+Creates a WordPress site using the Apache-based WordPress image.
+EOF
+}
 
-cp "$TEMPLATES/php.ini" "$HOMEDIR/conf.d/php.ini"
+################################################################################
+# ARGUMENT PARSING
+################################################################################
 
-# ========================================================================
-# Generate .env
-# ========================================================================
-ts; echo "Generating .env…"
+SITE_USER=""
+WEBSITE_ID=""
+PRIMARY_DOMAIN=""
+LETSENCRYPT_EMAIL=""
+WP_ADMIN_EMAIL=""
 
-export WEBSITE_ID COMPOSE_PROJECT_NAME DOMAIN PRIMARY_DOMAIN="$DOMAIN" \
-PRIMARY_URL="https://$DOMAIN" URL_WITHOUT_HTTP="$DOMAIN" \
-DOMAINS="$DOMAIN" LETSENCRYPT_EMAIL DB_ROOT_PASS DB_NAME DB_USER DB_PASS \
-CONTAINER_DB_NAME CONTAINER_SITE_NAME CONTAINER_CLI_NAME \
-SITEUSER WP_ADMIN_USER WP_ADMIN_TEMP_PASS WP_ADMIN_MAIL DB_LOCAL_PORT
-
-envsubst < "$TEMPLATES/env.template" > "$HOMEDIR/.env"
-
-# ========================================================================
-# Copy docker-compose.yml
-# ========================================================================
-ts; echo "Copying docker-compose template…"
-cp "$TEMPLATES/docker-compose.yml" "$HOMEDIR/docker-compose.yml"
-
-# ========================================================================
-# Start Docker stack
-# ========================================================================
-ts; echo "Starting Docker services…"
-cd "$HOMEDIR"
-docker compose up -d
-
-# ========================================================================
-# Wait for MySQL
-# ========================================================================
-ts; echo "Waiting for MySQL to become ready…"
-for i in {1..60}; do
-    if docker exec "$CONTAINER_DB_NAME" mysqladmin ping -p"$DB_ROOT_PASS" --silent &>/dev/null; then
-        echo -e "${GREEN}MySQL Ready.${NC}"
-        break
-    fi
-    sleep 2
-    [[ $i -eq 60 ]] && { echo -e "${RED}MySQL failed to start.${NC}"; exit 1; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user) SITE_USER="$2"; shift 2 ;;
+    --website-id) WEBSITE_ID="$2"; shift 2 ;;
+    --domain) PRIMARY_DOMAIN="$2"; shift 2 ;;
+    --letsencrypt-email) LETSENCRYPT_EMAIL="$2"; shift 2 ;;
+    --wp-admin-email) WP_ADMIN_EMAIL="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1"; exit 1 ;;
+  esac
 done
 
-# ========================================================================
-# Create database user + database
-# ========================================================================
-ts; echo "Initialising database…"
-docker exec "$CONTAINER_DB_NAME" mysql -uroot -p"$DB_ROOT_PASS" <<SQL
-CREATE DATABASE IF NOT EXISTS $DB_NAME;
-CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS';
-GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
-FLUSH PRIVILEGES;
-SQL
+[[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]] && {
+  echo "Missing required arguments."
+  usage
+  exit 1
+}
 
-# ========================================================================
-# Wait for Apache
-# ========================================================================
-ts; echo "Waiting for Apache inside container…"
-for i in {1..40}; do
-    if docker exec "$CONTAINER_SITE_NAME" curl -s localhost >/dev/null 2>&1; then
-        echo -e "${GREEN}Apache Ready.${NC}"
-        break
-    fi
-    sleep 2
-    [[ $i -eq 40 ]] && { echo -e "${RED}Apache failed to respond.${NC}"; exit 1; }
-done
+[[ -z "$WP_ADMIN_EMAIL" ]] && WP_ADMIN_EMAIL="$LETSENCRYPT_EMAIL"
 
-# ========================================================================
-# WordPress Auto Install
-# ========================================================================
-ts; echo "Checking if WordPress DB already contains tables…"
+################################################################################
+# MAIN
+################################################################################
 
-TABLE_COUNT=$(docker exec "$CONTAINER_DB_NAME" \
-  sh -c "mysql -u'$DB_USER' -p'$DB_PASS' -N -B -e \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';\"")
+require_root
 
-if [[ "$TABLE_COUNT" -eq 0 || "$FORCE_INSTALL" = true ]]; then
-    ts; echo -e "${YELLOW}Installing WordPress…${NC}"
+SITE_HOME="/home/${SITE_USER}"
+SITE_ROOT="${SITE_HOME}"
+DATA_DIR="${SITE_ROOT}/data"
 
-    docker exec "$CONTAINER_CLI_NAME" wp core install \
-        --url="https://$DOMAIN" \
-        --title="$DOMAIN" \
-        --admin_user="$WP_ADMIN_USER" \
-        --admin_password="$WP_ADMIN_TEMP_PASS" \
-        --admin_email="$WP_ADMIN_MAIL" \
-        --skip-email \
-        --path=/var/www/html
-
-else
-    ts; echo -e "${GREEN}WordPress already installed — skipping.${NC}"
+log "Creating Linux user '${SITE_USER}'..."
+if ! id -u "${SITE_USER}" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "${SITE_USER}"
+  passwd -l "${SITE_USER}" || true
 fi
 
-# ========================================================================
-# Success Output
-# ========================================================================
-echo "====================================================="
-echo "Site Created Successfully"
-echo "====================================================="
-echo "Linux user:        $SITEUSER"
-echo "Domain:            $DOMAIN"
-echo "Admin Email:       $WP_ADMIN_MAIL"
-echo "Admin Temp Pass:   $WP_ADMIN_TEMP_PASS"
-echo "DB Name:           $DB_NAME"
-echo "DB User:           $DB_USER"
-echo "DB Pass:           $DB_PASS"
-echo "SSH DB Tunnel:     ssh -L ${DB_LOCAL_PORT}:127.0.0.1:${DB_LOCAL_PORT} ${SITEUSER}@SERVER-IP"
-echo "====================================================="
+# Group setup
+if ! getent group "${GROUP_ADMIN}" >/dev/null; then
+  groupadd "${GROUP_ADMIN}"
+fi
 
-exit 0
+usermod -g "${SITE_USER}" "${SITE_USER}"
+chown "${SITE_USER}:${GROUP_ADMIN}" "${SITE_HOME}"
+chmod 750 "${SITE_HOME}"
+
+log "Creating data directories in ${DATA_DIR}..."
+mkdir -p "${DATA_DIR}/backup" "${DATA_DIR}/temp" "${DATA_DIR}/db" "${DATA_DIR}/site"
+chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
+chmod -R 770 "${DATA_DIR}"
+
+# Copy template structure
+log "Syncing template data structure..."
+rsync -a "${TEMPLATE_ROOT}/data/" "${DATA_DIR}/"
+chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
+
+log "Setting up conf.d/php.ini..."
+mkdir -p "${SITE_ROOT}/conf.d"
+cp -f "${TEMPLATE_ROOT}/conf.d/php.ini" "${SITE_ROOT}/conf.d/php.ini"
+chown -R "${SITE_USER}:${GROUP_ADMIN}" "${SITE_ROOT}/conf.d"
+chmod -R 770 "${SITE_ROOT}/conf.d"
+
+################################################################################
+# Generate .env
+################################################################################
+
+ENV_TEMPLATE="${TEMPLATE_ROOT}/.env.template"
+ENV_TARGET="${SITE_ROOT}/.env"
+
+log "Generating .env..."
+
+COMPOSE_PROJECT_NAME="${SITE_USER}"
+DOMAINS="${PRIMARY_DOMAIN}"
+CONTAINER_DB_NAME="${COMPOSE_PROJECT_NAME}-db"
+CONTAINER_SITE_NAME="${COMPOSE_PROJECT_NAME}-wp"
+CONTAINER_CLI_NAME="${COMPOSE_PROJECT_NAME}-cli"
+
+MYSQL_DATABASE="wp_${WEBSITE_ID}"
+MYSQL_USER="wp_${WEBSITE_ID}_u"
+MYSQL_PASSWORD="$(openssl rand -hex 16)"
+MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
+
+DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
+
+WP_TITLE="${PRIMARY_DOMAIN}"
+WP_ADMIN_USER="admin"
+WP_ADMIN_TEMP_PASS="$(openssl rand -base64 18)"
+WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
+WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
+
+export WEBSITE_ID COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
+       LETSENCRYPT_EMAIL CONTAINER_DB_NAME CONTAINER_SITE_NAME \
+       CONTAINER_CLI_NAME MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD \
+       MYSQL_ROOT_PASSWORD DB_LOCAL_PORT WP_TITLE WP_ADMIN_USER \
+       WP_ADMIN_TEMP_PASS WP_ADMIN_MAIL WP_PERMA_STRUCTURE
+
+envsubst < "${ENV_TEMPLATE}" > "${ENV_TARGET}"
+
+chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${ENV_TARGET}"
+chmod 640 "${ENV_TARGET}"
+
+################################################################################
+# docker-compose.yml
+################################################################################
+
+COMPOSE_TEMPLATE="${TEMPLATE_ROOT}/docker-compose.yml"
+COMPOSE_TARGET="${SITE_ROOT}/docker-compose.yml"
+
+log "Copying docker-compose.yml..."
+cp -f "${COMPOSE_TEMPLATE}" "${COMPOSE_TARGET}"
+chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${COMPOSE_TARGET}"
+chmod 640 "${COMPOSE_TARGET}"
+
+################################################################################
+# START STACK
+################################################################################
+
+log "Bringing up the Docker stack..."
+cd "${SITE_ROOT}"
+docker compose up -d --build
+
+################################################################################
+# SUMMARY
+################################################################################
+
+cat <<EOF
+
+=====================================================
+Site Created Successfully
+=====================================================
+
+Linux user:        ${SITE_USER}
+Home Directory:    ${SITE_HOME}
+Primary Domain:    ${PRIMARY_DOMAIN}
+Let's Encrypt:     ${LETSENCRYPT_EMAIL}
+
+Database:
+  Name:            ${MYSQL_DATABASE}
+  User:            ${MYSQL_USER}
+  Password:        ${MYSQL_PASSWORD}
+  Root Password:   ${MYSQL_ROOT_PASSWORD}
+  Local Port:      ${DB_LOCAL_PORT}
+
+WordPress:
+  Title:           ${WP_TITLE}
+  Admin User:      admin
+  Admin Email:     ${WP_ADMIN_EMAIL}
+  Temp Password:   ${WP_ADMIN_TEMP_PASS}
+
+SSH DB Tunnel:
+  ssh -L ${DB_LOCAL_PORT}:127.0.0.1:${DB_LOCAL_PORT} ${SITE_USER}@SERVER-IP
+
+=====================================================
+EOF
