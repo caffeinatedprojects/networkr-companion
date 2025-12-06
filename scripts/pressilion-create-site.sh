@@ -125,7 +125,7 @@ chmod -R 770 "${DATA_DIR}"
 if [[ -d "${TEMPLATE_ROOT}/data" ]]; then
   log "Syncing template data structure..."
   rsync -a "${TEMPLATE_ROOT}/data/" "${DATA_DIR}/"
-  chown -R "${SITEUSER}:${GROUP_ADMIN}" "${DATA_DIR}" || true
+  chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}" || true
 fi
 
 # ---------------------------------------------------------------
