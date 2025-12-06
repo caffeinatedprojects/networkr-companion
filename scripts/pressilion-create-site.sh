@@ -158,27 +158,64 @@ cd "${SITE_ROOT}"
 docker compose up -d --build 
 
 ################################################################################
-# WAIT FOR MYSQL & AUTO-INSTALL WORDPRESS
+# WAIT FOR MYSQL & WORDPRESS CORE BEFORE RUNNING INSTALL
 ################################################################################
 
-log "Waiting for MySQL to become ready..."
+log "Waiting for MySQL to become ready…"
 
-MAX_ATTEMPTS=60   # 60 × 2 seconds = 120s max wait
+MAX_ATTEMPTS=90    # 90 attempts × 2s = 3 minutes max wait
 ATTEMPT=1
 
+# STEP 1 — mysqladmin ping
 while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
-    if docker exec "${CONTAINER_DB_NAME}" mysqladmin ping -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent &>/dev/null; then
-        log "MySQL is ready."
+    if docker exec "${CONTAINER_DB_NAME}" mysqladmin ping \
+         -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent >/dev/null 2>&1; then
+        log "MySQL responded to ping."
         break
     fi
-    log "MySQL not ready yet… (${ATTEMPT}/${MAX_ATTEMPTS})"
+    log "MySQL ping failed… (${ATTEMPT}/${MAX_ATTEMPTS})"
     sleep 2
     ((ATTEMPT++))
 done
 
 if [[ $ATTEMPT -gt $MAX_ATTEMPTS ]]; then
-    log "❌ MySQL did not become ready — skipping auto-install."
+    log "❌ MySQL did not become ready. Skipping auto-install."
 else
+
+    # STEP 2 — Ensure DB actually responds to SQL queries
+    ATTEMPT=1
+    log "Verifying database readiness…"
+
+    while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+        if docker exec "${CONTAINER_DB_NAME}" \
+            mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" \
+            -e "SELECT 1;" "${MYSQL_DATABASE}" >/dev/null 2>&1; then
+            log "MySQL database '${MYSQL_DATABASE}' is ready."
+            break
+        fi
+        log "Database not ready yet… (${ATTEMPT}/${MAX_ATTEMPTS})"
+        sleep 2
+        ((ATTEMPT++))
+    done
+
+    # STEP 3 — Ensure WordPress files exist before install
+    ATTEMPT=1
+    log "Waiting for WordPress core files…"
+
+    while [[ $ATTEMPT -le 30 ]]; do
+        if docker exec "${CONTAINER_SITE_NAME}" test -f /var/www/html/wp-config.php \
+        || docker exec "${CONTAINER_SITE_NAME}" test -f /var/www/html/index.php; then
+            log "WordPress files detected."
+            break
+        fi
+        log "WordPress files not present yet… (${ATTEMPT}/30)"
+        sleep 2
+        ((ATTEMPT++))
+    done
+
+    # SAFETY: Apache needs a moment after extracting WP
+    sleep 5
+
     log "Running WordPress installation…"
 
     docker exec "${CONTAINER_CLI_NAME}" wp core install \
@@ -187,7 +224,7 @@ else
         --admin_user="${WP_ADMIN_USER}" \
         --admin_password="${WP_ADMIN_TEMP_PASS}" \
         --admin_email="${WP_ADMIN_MAIL}" \
-        --skip-email || log "⚠️ WP install retry may be required manually."
+        --skip-email  || log "⚠️ WP installation failed — may need manual retry."
 
     log "WordPress installation step complete."
 fi
