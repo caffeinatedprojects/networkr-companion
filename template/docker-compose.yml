@@ -3,13 +3,13 @@ version: "3.8"
 services:
   mysql:
     container_name: ${CONTAINER_DB_NAME}
-    image: ${DB_IMAGE}:${DB_VERSION}
+    image: ${DB_IMAGE:-mysql}:${DB_VERSION:-8.0}
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: ${DB_CPU_LIMIT}
-          memory: ${DB_MEMORY_LIMIT}
+          cpus: ${DB_CPU_LIMIT:-0.5}
+          memory: ${DB_MEMORY_LIMIT:-300M}
     networks:
       - wordpress-vpc
     volumes:
@@ -20,24 +20,24 @@ services:
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     logging:
-      driver: ${DB_LOG_DRIVER}
+      driver: ${DB_LOG_DRIVER:-json-file}
       options:
-        max-size: ${DB_LOG_MAX_SIZE}
-        max-file: ${DB_LOG_MAX_FILE}
+        max-size: ${DB_LOG_MAX_SIZE:-1m}
+        max-file: ${DB_LOG_MAX_FILE:-10}
     ports:
-      - "127.0.0.1:${DB_LOCAL_PORT}:3306"
+      - "127.0.0.1:${DB_LOCAL_PORT:-0}:3306"
 
   wp:
     depends_on:
       - mysql
     container_name: ${CONTAINER_SITE_NAME}
-    image: ${SITE_IMAGE}:${SITE_VERSION}
+    image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-php8.3-fpm}
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: ${SITE_CPU_LIMIT}
-          memory: ${SITE_MEMORY_LIMIT}
+          cpus: ${SITE_CPU_LIMIT:-0.5}
+          memory: ${SITE_MEMORY_LIMIT:-300M}
     networks:
       - proxy
       - wordpress-vpc
@@ -54,17 +54,17 @@ services:
       LETSENCRYPT_HOST: ${DOMAINS}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     logging:
-      driver: ${SITE_LOG_DRIVER}
+      driver: ${SITE_LOG_DRIVER:-json-file}
       options:
-        max-size: ${SITE_LOG_MAX_SIZE}
-        max-file: ${SITE_LOG_MAX_FILE}
+        max-size: ${SITE_LOG_MAX_SIZE:-2m}
+        max-file: ${SITE_LOG_MAX_FILE:-10}
 
   wpcli:
+    container_name: ${CONTAINER_CLI_NAME}
     depends_on:
       - mysql
       - wp
-    container_name: ${CONTAINER_CLI_NAME}
-    image: ${CLI_IMAGE}:${CLI_VERSION}
+    image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli-php8.3}
     command: tail -f /dev/null
     networks:
       - wordpress-vpc
@@ -80,5 +80,7 @@ services:
 networks:
   proxy:
     external: true
+    name: proxy
+
   wordpress-vpc:
     driver: bridge
