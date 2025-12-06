@@ -27,8 +27,12 @@ check "test -f /etc/cron.weekly/networkr-docker-maintenance" "Weekly cron instal
 check "systemctl is-enabled networkr-companion-update.service" "Boot update service enabled"
 check "grep -q '^PermitRootLogin no' /etc/ssh/sshd_config" "SSH root login disabled"
 check "grep -q '^PasswordAuthentication no' /etc/ssh/sshd_config" "SSH passwords disabled"
-check "ufw status | grep -q '22/tcp'" "Firewall: SSH allowed"
-check "ufw status | grep -q '80/tcp'" "Firewall: HTTP allowed"
-check "ufw status | grep -q '443/tcp'" "Firewall: HTTPS allowed"
+# UFW must be active
+check "sudo ufw status | grep -q 'Status: active'" 'Firewall: UFW active'
+
+# Check rules accurately (full match on 'ALLOW IN')
+check "sudo ufw status | grep -qE '^22/tcp\s+ALLOW IN'" "Firewall: SSH allowed"
+check "sudo ufw status | grep -qE '^80/tcp\s+ALLOW IN'" "Firewall: HTTP allowed"
+check "sudo ufw status | grep -qE '^443/tcp\s+ALLOW IN'" "Firewall: HTTPS allowed"
 
 echo "=== DONE ==="
