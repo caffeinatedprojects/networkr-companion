@@ -1,28 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------------------------------------------------------
-# Reverse Proxy / SSL / Routing Hello-World Tester
-# ---------------------------------------------------------
-# Usage:
-#   sudo bash proxy-hello-test.sh test.example.com email@example.com
-#
-# It will:
-#   - Create ~/hello-test
-#   - Deploy a simple nginx container behind nginx-proxy
-#   - Issue SSL via ACME companion
-#   - Test HTTP, HTTPS, and routing
-#   - Print a diagnostics summary
-#   - Optionally clean up afterwards
-# ---------------------------------------------------------
-
 GREEN="\033[32m"
 RED="\033[31m"
 YELLOW="\033[33m"
 RESET="\033[0m"
 
-fail() { echo -e "${RED}[✘] $*${RESET}"; }
 ok()   { echo -e "${GREEN}[✔] $*${RESET}"; }
+fail() { echo -e "${RED}[✘] $*${RESET}"; }
 warn() { echo -e "${YELLOW}[!] $*${RESET}"; }
 
 DOMAIN="${1:-}"
@@ -38,12 +23,7 @@ mkdir -p "$TEST_ROOT/html"
 
 echo "<h1>Hello from ${DOMAIN}</h1>" > "$TEST_ROOT/html/index.html"
 
-# -----------------------------
-# Create docker-compose.yml
-# -----------------------------
 cat > "$TEST_ROOT/docker-compose.yml" <<EOF
-version: "3.8"
-
 services:
   hello-test:
     image: nginx:alpine
@@ -64,90 +44,90 @@ networks:
 EOF
 
 cd "$TEST_ROOT"
-
-echo -e "${YELLOW}Bringing up test container...${RESET}"
 docker compose up -d
-
 sleep 3
-
-# -----------------------------
-# DNS Resolution Test
-# -----------------------------
-SERVER_IP=$(hostname -I | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n1)
-DNS_IP=$(dig +short A "$DOMAIN" | head -n1)
 
 echo
 echo "=== DNS CHECK ==="
+SERVER_IP=$(hostname -I | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n1)
+DNS_IP=$(dig +short A "$DOMAIN" | head -n1)
+
 echo "Domain A-record:    ${DNS_IP:-<none>}"
 echo "Server IPv4:        $SERVER_IP"
 
-if [[ -z "$DNS_IP" ]]; then
-  fail "No A-record found!"
-elif [[ "$DNS_IP" != "$SERVER_IP" ]]; then
-  fail "Domain does NOT point to this server!"
-else
+if [[ "$DNS_IP" == "$SERVER_IP" ]]; then
   ok "Domain properly points to this server."
-fi
-
-# -----------------------------
-# HTTP TEST (port 80)
-# -----------------------------
-echo
-echo "=== HTTP TEST (port 80) ==="
-if curl -s -I "http://${DOMAIN}" | grep -q "200 OK"; then
-  ok "HTTP reachable"
 else
-  fail "HTTP not reachable"
+  fail "Domain does NOT point to this server."
 fi
 
-# -----------------------------
-# HTTPS TEST (port 443)
-# -----------------------------
-echo
-echo "=== HTTPS TEST (port 443) ==="
-if curl -s -I "https://${DOMAIN}" | grep -q "200 OK"; then
-  ok "HTTPS reachable"
-else
-  fail "HTTPS not reachable yet (ACME may still be issuing cert)"
-fi
+# ---------------------------------------
+# RETRY LOGIC FOR HTTP/HTTPS
+# ---------------------------------------
 
-# -----------------------------
-# PROXY ↔ CONTAINER ROUTING
-# -----------------------------
+attempt() {
+  local cmd="$1"
+  local label="$2"
+  local success_msg="$3"
+  local fail_msg="$4"
+
+  for i in {1..30}; do
+    if eval "$cmd"; then
+      ok "$success_msg"
+      return 0
+    fi
+    sleep 3
+  done
+
+  fail "$fail_msg"
+}
+
 echo
-echo "=== PROXY ROUTING TEST ==="
+echo "=== HTTP TEST ==="
+attempt \
+  "curl -s -I http://${DOMAIN} | grep -q -E '200|301'" \
+  "HTTP" \
+  "HTTP reachable" \
+  "HTTP failed after retries"
+
+
+echo
+echo "=== HTTPS TEST ==="
+attempt \
+  "curl -s -I https://${DOMAIN} | grep -q -E '200|301'" \
+  "HTTPS" \
+  "HTTPS reachable" \
+  "HTTPS failed after retries"
+
+
+echo
+echo "=== ROUTING TEST ==="
 if docker exec proxy-web-auto curl -s "http://hello-test-${DOMAIN}" >/dev/null 2>&1; then
-  ok "Proxy container can route to hello-test container"
+  ok "Proxy container can route to test container"
 else
-  fail "Proxy cannot reach container! Check proxy network."
+  fail "Proxy cannot reach backend container!"
 fi
 
-# -----------------------------
-# CERTIFICATE TEST
-# -----------------------------
 echo
-echo "=== SSL CERTIFICATE CHECK ==="
+echo "=== CERT CHECK ==="
 if docker exec proxy-web-auto test -f "/etc/nginx/certs/${DOMAIN}.crt"; then
   ok "SSL certificate exists"
 else
-  warn "Certificate not yet present (may take 30–90 seconds)"
+  warn "Certificate not present yet (may still be issuing)"
 fi
 
 echo
 echo "==========================================="
-echo " HELLO TEST DEPLOYED: http://${DOMAIN}"
+echo " HELLO TEST DEPLOYED → https://${DOMAIN}"
 echo "==========================================="
 
-# -----------------------------
-# Cleanup prompt
-# -----------------------------
-echo -e "${YELLOW}Do you want to remove the test site now? (y/n)${RESET}"
+echo -e "${YELLOW}Cleanup test? (y/n)${RESET}"
 read -r ANSWER
+
 if [[ "$ANSWER" =~ ^[Yy]$ ]]; then
-  echo "Removing test container and files..."
   docker compose down
   rm -rf "$TEST_ROOT"
   ok "Cleanup complete."
 else
-  warn "Test site left running at: $TEST_ROOT"
+  warn "Test left running at: $TEST_ROOT"
 fi
