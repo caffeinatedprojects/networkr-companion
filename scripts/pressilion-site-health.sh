@@ -1,100 +1,113 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SITE_USER="$1"
-
-if [[ -z "${SITE_USER}" ]]; then
-  echo "Usage: pressilion-site-health <user-site-xxx>"
+SITE="$1"
+if [[ -z "$SITE" ]]; then
+  echo "Usage: pressilion-site-health.sh <site-user>"
   exit 1
 fi
 
-SITE_HOME="/home/${SITE_USER}"
+SITE_HOME="/home/${SITE}"
 ENV_FILE="${SITE_HOME}/.env"
-COMPOSE_FILE="${SITE_HOME}/docker-compose.yml"
+COMPOSE_YML="${SITE_HOME}/docker-compose.yml"
 
 echo "========================================"
-echo "   SITE HEALTH CHECK: ${SITE_USER}"
+echo "   SITE HEALTH CHECK: ${SITE}"
 echo "========================================"
 
-ok()   { echo -e "[✔] $1"; }
-fail() { echo -e "[✘] $1"; }
+# Helpers
+ok()   { echo -e "[✔] $*"; }
+fail() { echo -e "[✘] $*"; }
 
-# -------------------------------------------------------
-# 1. Folder + env + compose existence
-# -------------------------------------------------------
-[[ -d "${SITE_HOME}" ]] && ok "Home folder exists" || fail "Home folder missing!"
-[[ -f "${ENV_FILE}" ]] && ok ".env file exists" || fail ".env missing!"
-[[ -f "${COMPOSE_FILE}" ]] && ok "docker-compose.yml exists" || fail "compose missing!"
+# ----------------------------
+# BASIC FILE & FOLDER CHECKS
+# ----------------------------
 
-# Load environment
-set -a
+[[ -d "${SITE_HOME}" ]] && ok "Home folder exists" || fail "Home folder missing"
+[[ -f "${ENV_FILE}" ]] && ok ".env file exists" || fail ".env file missing"
+[[ -f "${COMPOSE_YML}" ]] && ok "docker-compose.yml exists" || fail "docker-compose.yml missing"
+
+# Load env
+# shellcheck disable=SC1090
 source "${ENV_FILE}"
-set +a
 
-# -------------------------------------------------------
-# 2. Container status
-# -------------------------------------------------------
-DB_CONT="${CONTAINER_DB_NAME}"
-WP_CONT="${CONTAINER_SITE_NAME}"
-CLI_CONT="${CONTAINER_CLI_NAME}"
+# ----------------------------
+# DOCKER CONTAINER STATUS
+# ----------------------------
 
-docker ps --format '{{.Names}}' | grep -q "^${DB_CONT}$" && ok "DB container running" || fail "DB container NOT running"
-docker ps --format '{{.Names}}' | grep -q "^${WP_CONT}$" && ok "WP container running" || fail "WP container NOT running"
-docker ps --format '{{.Names}}' | grep -q "^${CLI_CONT}$" && ok "CLI container running" || fail "CLI container NOT running"
+DB_STATUS=$(docker inspect -f '{{.State.Running}}' "${CONTAINER_DB_NAME}" 2>/dev/null || echo "false")
+WP_STATUS=$(docker inspect -f '{{.State.Running}}' "${CONTAINER_SITE_NAME}" 2>/dev/null || echo "false")
+CLI_STATUS=$(docker inspect -f '{{.State.Running}}' "${CONTAINER_CLI_NAME}" 2>/dev/null || echo "false")
 
-# -------------------------------------------------------
-# 3. Verify WP container responds on port 9000
-# -------------------------------------------------------
-echo "GET /" | docker exec -i "${WP_CONT}" bash -c "timeout 2 nc -v localhost 9000" >/dev/null 2>&1 \
-  && ok "PHP-FPM responding on port 9000" \
-  || fail "PHP-FPM NOT responding (this causes 502 errors!)"
+[[ "${DB_STATUS}" == "true" ]] && ok "DB container running" || fail "DB container NOT running"
+[[ "${WP_STATUS}" == "true" ]] && ok "WP container running" || fail "WP container NOT running"
+[[ "${CLI_STATUS}" == "true" ]] && ok "CLI container running" || fail "CLI container NOT running"
 
-# -------------------------------------------------------
-# 4. MySQL alive check
-# -------------------------------------------------------
-docker exec "${DB_CONT}" mysqladmin ping -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" >/dev/null 2>&1 \
-  && ok "MySQL alive & accepting credentials" \
-  || fail "MySQL not accepting credentials!"
-
-# -------------------------------------------------------
-# 5. WordPress installed check
-# -------------------------------------------------------
-docker exec "${CLI_CONT}" wp core is-installed --allow-root >/dev/null 2>&1 \
-  && ok "WordPress core installed" \
-  || fail "WordPress NOT installed yet"
-
-# -------------------------------------------------------
-# 6. Proxy routing check
-# -------------------------------------------------------
-UPSTREAM_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${WP_CONT}")
-
-docker exec proxy-web-auto nginx -T | grep -q "${PRIMARY_DOMAIN}" \
-  && ok "Domain present in Nginx config" \
-  || fail "Domain NOT present in nginx conf!"
-
-echo -n | nc -v "${UPSTREAM_IP}" 9000 >/dev/null 2>&1 \
-  && ok "Proxy can reach upstream container" \
-  || fail "Proxy cannot reach WP container!"
-
-# -------------------------------------------------------
-# 7. DNS resolution check
-# -------------------------------------------------------
-SERVER_IP=$(curl -s https://icanhazip.com || echo "unknown")
-
-DOMAIN_IP=$(dig +short "${PRIMARY_DOMAIN}" | tail -n1)
-
-if [[ "${SERVER_IP}" == "${DOMAIN_IP}" ]]; then
-  ok "Domain resolves to correct server: ${SERVER_IP}"
+# ----------------------------
+# PHP-FPM TEST (internal)
+# ----------------------------
+if docker exec "${CONTAINER_SITE_NAME}" bash -c 'echo -e "GET /health.php HTTP/1.1\r\n\r\n" >/dev/tcp/127.0.0.1/9000' 2>/dev/null; then
+  ok "PHP-FPM responding"
 else
-  fail "DNS mismatch! Domain → ${DOMAIN_IP}, Server → ${SERVER_IP}"
+  fail "PHP-FPM NOT responding"
 fi
 
-# -------------------------------------------------------
-# 8. SSL certificate exists
-# -------------------------------------------------------
-docker exec proxy-web-auto ls /etc/nginx/certs | grep -q "${PRIMARY_DOMAIN}" \
-  && ok "SSL certificate exists" \
-  || fail "SSL certificate missing!"
+# ----------------------------
+# MYSQL TEST
+# ----------------------------
+if docker exec "${CONTAINER_DB_NAME}" \
+   mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "SELECT 1;" >/dev/null 2>&1; then
+  ok "MySQL alive & accepting credentials"
+else
+  fail "MySQL connection failed"
+fi
+
+# ----------------------------
+# WORDPRESS INSTALLED?
+# ----------------------------
+if docker exec "${CONTAINER_SITE_NAME}" test -f /var/www/html/wp-config.php; then
+  ok "WordPress installed"
+else
+  fail "WordPress NOT installed yet"
+fi
+
+# ----------------------------
+# NGINX-PROXY DETECTION
+# ----------------------------
+# Extract server IP (IPv4 only)
+SERVER_IPv4=$(hostname -I | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n1)
+
+# Query DNS A record
+DNS_IPv4=$(dig +short A "${PRIMARY_DOMAIN}" | head -n1)
+
+if [[ -n "${DNS_IPv4}" ]]; then
+  [[ "${DNS_IPv4}" == "${SERVER_IPv4}" ]] \
+    && ok "DNS A record matches server IPv4 (${DNS_IPv4})" \
+    || fail "DNS mismatch: Domain → ${DNS_IPv4}, Server → ${SERVER_IPv4}"
+else
+  fail "No A record found for domain"
+fi
+
+# Check domain present in nginx config
+if docker exec proxy-web-auto grep -q "${PRIMARY_DOMAIN}" /etc/nginx/conf.d/default.conf; then
+  ok "Domain present in Nginx config"
+else
+  fail "Domain missing from Nginx config"
+fi
+
+# Check proxy → WP reachability
+if docker exec proxy-web-auto curl -s "http://${CONTAINER_SITE_NAME}:9000" >/dev/null 2>&1 ; then
+  ok "Proxy can reach WP container"
+else
+  fail "Proxy cannot reach WP container"
+fi
+
+# Check SSL cert presence
+if docker exec proxy-web-auto test -f "/etc/nginx/certs/${PRIMARY_DOMAIN}.crt"; then
+  ok "SSL certificate exists"
+else
+  fail "SSL certificate missing"
+fi
 
 echo "========================================"
 echo " Health check complete."
