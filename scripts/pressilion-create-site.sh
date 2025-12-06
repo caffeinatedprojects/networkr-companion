@@ -12,7 +12,7 @@ set -euo pipefail
 #     --letsencrypt-email admin@example.com \
 #     --wp-admin-email admin@example.com
 
-PRESSILION_USER="pressilion"
+PRESSILION_USER="networkr"
 NETWORKR_ROOT="/home/${PRESSILION_USER}/networkr-companion"
 TEMPLATE_ROOT="${NETWORKR_ROOT}/Template"
 
