@@ -155,7 +155,42 @@ chmod 640 "${COMPOSE_TARGET}"
 
 log "Bringing up the Docker stack..."
 cd "${SITE_ROOT}"
-docker compose up -d --build
+docker compose up -d --build 
+
+################################################################################
+# WAIT FOR MYSQL & AUTO-INSTALL WORDPRESS
+################################################################################
+
+log "Waiting for MySQL to become ready..."
+
+MAX_ATTEMPTS=60   # 60 × 2 seconds = 120s max wait
+ATTEMPT=1
+
+while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+    if docker exec "${CONTAINER_DB_NAME}" mysqladmin ping -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent &>/dev/null; then
+        log "MySQL is ready."
+        break
+    fi
+    log "MySQL not ready yet… (${ATTEMPT}/${MAX_ATTEMPTS})"
+    sleep 2
+    ((ATTEMPT++))
+done
+
+if [[ $ATTEMPT -gt $MAX_ATTEMPTS ]]; then
+    log "❌ MySQL did not become ready — skipping auto-install."
+else
+    log "Running WordPress installation…"
+
+    docker exec "${CONTAINER_CLI_NAME}" wp core install \
+        --url="https://${PRIMARY_DOMAIN}" \
+        --title="${WP_TITLE}" \
+        --admin_user="${WP_ADMIN_USER}" \
+        --admin_password="${WP_ADMIN_TEMP_PASS}" \
+        --admin_email="${WP_ADMIN_MAIL}" \
+        --skip-email || log "⚠️ WP install retry may be required manually."
+
+    log "WordPress installation step complete."
+fi
 
 ################################################################################
 # SUMMARY
