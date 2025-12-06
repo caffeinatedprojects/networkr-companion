@@ -31,7 +31,7 @@ services:
     depends_on:
       - mysql
     container_name: ${CONTAINER_SITE_NAME}
-    image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-php8.3-fpm}
+    image: ${SITE_IMAGE:-wordpress}:${SITE_VERSION:-latest}
     restart: unless-stopped
     deploy:
       resources:
@@ -51,6 +51,7 @@ services:
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
       WORDPRESS_TABLE_PREFIX: ${WORDPRESS_TABLE_PREFIX}
       VIRTUAL_HOST: ${DOMAINS}
+      VIRTUAL_PORT: 9000
       LETSENCRYPT_HOST: ${DOMAINS}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     logging:
@@ -64,7 +65,7 @@ services:
     depends_on:
       - mysql
       - wp
-    image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-cli-php8.3}
+    image: ${CLI_IMAGE:-wordpress}:${CLI_VERSION:-latest}
     command: tail -f /dev/null
     networks:
       - wordpress-vpc
