@@ -1,175 +1,205 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ============================================================================
+#  Pressilion – Create Site Script (Apache WordPress Edition)
+#  Creates a per-site Linux user + directory layout, copies templates,
+#  generates .env + docker-compose.yml, brings up containers, waits for DB
+#  and Apache, auto-installs WordPress.
+# ============================================================================
+
 PRESSILION_USER="networkr"
 NETWORKR_ROOT="/home/${PRESSILION_USER}/networkr-companion"
 TEMPLATE_ROOT="${NETWORKR_ROOT}/template"
 GROUP_ADMIN="pressadmin"
 
 log() {
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+    echo "[${EPOCHREALTIME}] $*"
 }
 
-require_root() {
-  if [[ "$(id -u)" -ne 0 ]]; then
-    echo "This script must be run as root." >&2
-    exit 1
-  fi
+cleanup_partial() {
+    log "⚠️  Error encountered — cleaning up partial site for ${SITEUSER}…"
+
+    docker rm -f "${SITEUSER}-wp" "${SITEUSER}-db" "${SITEUSER}-cli" >/dev/null 2>&1 || true
+    docker network rm "${SITEUSER}_wordpress-vpc" >/dev/null 2>&1 || true
+
+    userdel -r "${SITEUSER}" >/dev/null 2>&1 || true
 }
 
-usage() {
-  cat <<EOF
-Usage:
-  pressilion-create-site --user USERNAME --website-id ID --domain DOMAIN \\
-                         --letsencrypt-email EMAIL [--wp-admin-email EMAIL]
+trap cleanup_partial ERR
 
-Creates a WordPress site using the Apache-based WordPress image.
-EOF
-}
 
-################################################################################
-# ARGUMENT PARSING
-################################################################################
-
-SITE_USER=""
+# ============================================================================
+#  ARGUMENT PARSING
+# ============================================================================
+SITEUSER=""
 WEBSITE_ID=""
 PRIMARY_DOMAIN=""
 LETSENCRYPT_EMAIL=""
 WP_ADMIN_EMAIL=""
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --user) SITE_USER="$2"; shift 2 ;;
-    --website-id) WEBSITE_ID="$2"; shift 2 ;;
-    --domain) PRIMARY_DOMAIN="$2"; shift 2 ;;
-    --letsencrypt-email) LETSENCRYPT_EMAIL="$2"; shift 2 ;;
-    --wp-admin-email) WP_ADMIN_EMAIL="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown argument: $1"; exit 1 ;;
-  esac
+    case "$1" in
+        --user) SITEUSER="$2"; shift 2 ;;
+        --website-id) WEBSITE_ID="$2"; shift 2 ;;
+        --domain) PRIMARY_DOMAIN="$2"; shift 2 ;;
+        --letsencrypt-email) LETSENCRYPT_EMAIL="$2"; shift 2 ;;
+        --wp-admin-email) WP_ADMIN_EMAIL="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: pressilion-create-site --user X --website-id N --domain example.com --letsencrypt-email EMAIL [--wp-admin-email EMAIL]"
+            exit 0
+            ;;
+        *) echo "Unknown argument: $1"; exit 1 ;;
+    esac
 done
 
-[[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]] && {
-  echo "Missing required arguments."
-  usage
-  exit 1
-}
-
-[[ -z "$WP_ADMIN_EMAIL" ]] && WP_ADMIN_EMAIL="$LETSENCRYPT_EMAIL"
-
-################################################################################
-# MAIN
-################################################################################
-
-require_root
-
-SITE_HOME="/home/${SITE_USER}"
-SITE_ROOT="${SITE_HOME}"
-DATA_DIR="${SITE_ROOT}/data"
-
-log "Creating Linux user '${SITE_USER}'..."
-if ! id -u "${SITE_USER}" >/dev/null 2>&1; then
-  useradd -m -s /bin/bash "${SITE_USER}"
-  passwd -l "${SITE_USER}" || true
+if [[ -z "$SITEUSER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]]; then
+    echo "Missing required arguments."
+    exit 1
 fi
 
-# Group setup
-if ! getent group "${GROUP_ADMIN}" >/dev/null; then
-  groupadd "${GROUP_ADMIN}"
+if [[ -z "$WP_ADMIN_EMAIL" ]]; then
+    WP_ADMIN_EMAIL="$LETSENCRYPT_EMAIL"
 fi
 
-usermod -g "${SITE_USER}" "${SITE_USER}"
-chown "${SITE_USER}:${GROUP_ADMIN}" "${SITE_HOME}"
-chmod 750 "${SITE_HOME}"
 
-log "Creating data directories in ${DATA_DIR}..."
-mkdir -p "${DATA_DIR}/backup" "${DATA_DIR}/temp" "${DATA_DIR}/db" "${DATA_DIR}/site"
-chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
+# ============================================================================
+#  USER + DIRECTORIES
+# ============================================================================
+log "Creating Linux user '${SITEUSER}'…"
+
+if ! id -u "${SITEUSER}" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "${SITEUSER}"
+    passwd -l "${SITEUSER}" || true
+else
+    log "User already exists — continuing"
+fi
+
+SITE_HOME="/home/${SITEUSER}"
+DATA_DIR="${SITE_HOME}/data"
+
+mkdir -p "${DATA_DIR}/"{backup,temp,db,site}
 chmod -R 770 "${DATA_DIR}"
 
-# Copy template structure
-log "Syncing template data structure..."
+# Copy template data structure
+log "Copying template directory layout…"
 rsync -a "${TEMPLATE_ROOT}/data/" "${DATA_DIR}/"
-chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
 
-log "Setting up conf.d/php.ini..."
-mkdir -p "${SITE_ROOT}/conf.d"
-cp -f "${TEMPLATE_ROOT}/conf.d/php.ini" "${SITE_ROOT}/conf.d/php.ini"
-chown -R "${SITE_USER}:${GROUP_ADMIN}" "${SITE_ROOT}/conf.d"
-chmod -R 770 "${SITE_ROOT}/conf.d"
+# Copy conf.d
+mkdir -p "${SITE_HOME}/conf.d"
+cp -f "${TEMPLATE_ROOT}/conf.d/php.ini" "${SITE_HOME}/conf.d/php.ini"
 
-################################################################################
-# Generate .env
-################################################################################
+chown -R "${SITEUSER}:${GROUP_ADMIN}" "${SITE_HOME}"
+chmod -R 750 "${SITE_HOME}"
 
+
+# ============================================================================
+#  ENV GENERATION
+# ============================================================================
 ENV_TEMPLATE="${TEMPLATE_ROOT}/.env.template"
-ENV_TARGET="${SITE_ROOT}/.env"
+ENV_TARGET="${SITE_HOME}/.env"
 
-log "Generating .env..."
+log "Generating .env…"
 
-COMPOSE_PROJECT_NAME="${SITE_USER}"
-DOMAINS="${PRIMARY_DOMAIN}"
-CONTAINER_DB_NAME="${COMPOSE_PROJECT_NAME}-db"
-CONTAINER_SITE_NAME="${COMPOSE_PROJECT_NAME}-wp"
-CONTAINER_CLI_NAME="${COMPOSE_PROJECT_NAME}-cli"
+export WEBSITE_ID COMPOSE_PROJECT_NAME="${SITEUSER}" PRIMARY_DOMAIN DOMAINS="${PRIMARY_DOMAIN}" \
+       LETSENCRYPT_EMAIL
 
 MYSQL_DATABASE="wp_${WEBSITE_ID}"
 MYSQL_USER="wp_${WEBSITE_ID}_u"
 MYSQL_PASSWORD="$(openssl rand -hex 16)"
 MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
-
 DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
 
-WP_TITLE="${PRIMARY_DOMAIN}"
-WP_ADMIN_USER="admin"
 WP_ADMIN_TEMP_PASS="$(openssl rand -base64 18)"
-WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
-WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
-export WEBSITE_ID COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
-       LETSENCRYPT_EMAIL CONTAINER_DB_NAME CONTAINER_SITE_NAME \
-       CONTAINER_CLI_NAME MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD \
-       MYSQL_ROOT_PASSWORD DB_LOCAL_PORT WP_TITLE WP_ADMIN_USER \
-       WP_ADMIN_TEMP_PASS WP_ADMIN_MAIL WP_PERMA_STRUCTURE
+export MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD DB_LOCAL_PORT \
+       WP_ADMIN_TEMP_PASS WP_ADMIN_EMAIL WP_ADMIN_USER="admin" WP_TITLE="${PRIMARY_DOMAIN}" \
+       WORDPRESS_TABLE_PREFIX="wp_"
 
 envsubst < "${ENV_TEMPLATE}" > "${ENV_TARGET}"
-
-chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${ENV_TARGET}"
 chmod 640 "${ENV_TARGET}"
 
-################################################################################
-# docker-compose.yml
-################################################################################
 
+# ============================================================================
+#  DOCKER-COMPOSE
+# ============================================================================
 COMPOSE_TEMPLATE="${TEMPLATE_ROOT}/docker-compose.yml"
-COMPOSE_TARGET="${SITE_ROOT}/docker-compose.yml"
+COMPOSE_TARGET="${SITE_HOME}/docker-compose.yml"
 
-log "Copying docker-compose.yml..."
+log "Copying docker-compose.yml…"
 cp -f "${COMPOSE_TEMPLATE}" "${COMPOSE_TARGET}"
-chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${COMPOSE_TARGET}"
 chmod 640 "${COMPOSE_TARGET}"
 
-################################################################################
-# START STACK
-################################################################################
 
-log "Bringing up the Docker stack..."
-cd "${SITE_ROOT}"
+# ============================================================================
+#  START DOCKER STACK
+# ============================================================================
+cd "${SITE_HOME}"
+
+log "Starting Docker stack…"
 docker compose up -d --build
 
-################################################################################
-# SUMMARY
-################################################################################
 
+# ============================================================================
+#  WAIT FOR MYSQL
+# ============================================================================
+log "Waiting for MySQL to become ready…"
+
+MAX_WAIT=60
+for i in $(seq 1 $MAX_WAIT); do
+    if docker exec "${SITEUSER}-db" mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" >/dev/null 2>&1; then
+        log "✔ MySQL is ready"
+        break
+    fi
+    log "… MySQL not ready yet ($i/$MAX_WAIT)"
+    sleep 2
+done
+
+
+# ============================================================================
+#  WAIT FOR APACHE TO SERVE
+# ============================================================================
+log "Waiting for Apache inside container…"
+
+for i in $(seq 1 60); do
+    if docker exec "${SITEUSER}-wp" sh -c "curl -fs http://localhost" >/dev/null 2>&1; then
+        log "✔ Apache is serving requests"
+        break
+    fi
+    log "… Apache not ready yet ($i/60)"
+    sleep 2
+done
+
+
+# ============================================================================
+#  WORDPRESS INSTALL
+# ============================================================================
+log "Running wp core install…"
+
+docker exec "${SITEUSER}-cli" wp core install \
+    --url="https://${PRIMARY_DOMAIN}" \
+    --title="${PRIMARY_DOMAIN}" \
+    --admin_user="admin" \
+    --admin_password="${WP_ADMIN_TEMP_PASS}" \
+    --admin_email="${WP_ADMIN_EMAIL}" \
+    --skip-email
+
+log "✔ WordPress installed"
+
+
+# ============================================================================
+#  SUMMARY
+# ============================================================================
 cat <<EOF
 
 =====================================================
-Site Created Successfully
+ Site Created Successfully
 =====================================================
 
-Linux user:        ${SITE_USER}
+Linux User:        ${SITEUSER}
 Home Directory:    ${SITE_HOME}
-Primary Domain:    ${PRIMARY_DOMAIN}
+
+Domain:            https://${PRIMARY_DOMAIN}
 Let's Encrypt:     ${LETSENCRYPT_EMAIL}
 
 Database:
@@ -180,13 +210,10 @@ Database:
   Local Port:      ${DB_LOCAL_PORT}
 
 WordPress:
-  Title:           ${WP_TITLE}
   Admin User:      admin
   Admin Email:     ${WP_ADMIN_EMAIL}
   Temp Password:   ${WP_ADMIN_TEMP_PASS}
 
-SSH DB Tunnel:
-  ssh -L ${DB_LOCAL_PORT}:127.0.0.1:${DB_LOCAL_PORT} ${SITE_USER}@SERVER-IP
-
 =====================================================
+
 EOF
