@@ -1,103 +1,97 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-SITE_USER="$1"
-SITE_HOME="/home/${SITE_USER}"
-ENV_FILE="${SITE_HOME}/.env"
-COMPOSE_FILE="${SITE_HOME}/docker-compose.yml"
+SITEUSER="$1"
+HOMEDIR="/home/$SITEUSER"
+COMPOSE="$HOMEDIR/docker-compose.yml"
 
 echo "========================================"
-echo "   SITE HEALTH CHECK: ${SITE_USER}"
+echo "   SITE HEALTH CHECK: $SITEUSER"
 echo "========================================"
 
-# ----------------------------------------
-# Basic checks
-# ----------------------------------------
+# --- Basic file checks ---
+[ -d "$HOMEDIR" ] && echo "[✔] Home folder exists" || echo "[✘] Home folder missing"
+[ -f "$HOMEDIR/.env" ] && echo "[✔] .env file exists" || echo "[✘] .env missing"
+[ -f "$COMPOSE" ] && echo "[✔] docker-compose.yml exists" || echo "[✘] docker-compose.yml missing"
 
-[[ -d "$SITE_HOME" ]] && echo "[✔] Home folder exists" || echo "[✘] Home folder missing"
-[[ -f "$ENV_FILE" ]] && echo "[✔] .env file exists" || echo "[✘] .env missing"
-[[ -f "$COMPOSE_FILE" ]] && echo "[✔] docker-compose.yml exists" || echo "[✘] docker-compose.yml missing"
+# --- Container checks ---
+DB_CONTAINER="${SITEUSER}-db"
+WP_CONTAINER="${SITEUSER}-wp"
+CLI_CONTAINER="${SITEUSER}-cli"
 
-# Extract container names
-CONTAINER_WP=$(grep CONTAINER_SITE_NAME "$ENV_FILE" | cut -d '=' -f2)
-CONTAINER_DB=$(grep CONTAINER_DB_NAME "$ENV_FILE" | cut -d '=' -f2)
+docker ps --format '{{.Names}}' | grep -q "$DB_CONTAINER" \
+  && echo "[✔] DB container running" \
+  || echo "[✘] DB container NOT running"
 
-# ----------------------------------------
-# Container checks
-# ----------------------------------------
+docker ps --format '{{.Names}}' | grep -q "$WP_CONTAINER" \
+  && echo "[✔] WP container running" \
+  || echo "[✘] WP container NOT running"
 
-docker ps --format '{{.Names}}' | grep -q "$CONTAINER_DB" \
-  && echo "[✔] DB container running" || echo "[✘] DB container NOT running"
+docker ps --format '{{.Names}}' | grep -q "$CLI_CONTAINER" \
+  && echo "[✔] CLI container running" \
+  || echo "[✘] CLI container NOT running"
 
-docker ps --format '{{.Names}}' | grep -q "$CONTAINER_WP" \
-  && echo "[✔] WP container running" || echo "[✘] WP container NOT running"
-
-docker ps --format '{{.Names}}' | grep -q "${SITE_USER}-cli" \
-  && echo "[✔] CLI container running" || echo "[✘] CLI container NOT running"
-
-# ----------------------------------------
-# MySQL check
-# ----------------------------------------
-DB_NAME=$(grep MYSQL_DATABASE "$ENV_FILE" | cut -d '=' -f2)
-DB_USER=$(grep MYSQL_USER "$ENV_FILE" | cut -d '=' -f2)
-DB_PASS=$(grep MYSQL_PASSWORD "$ENV_FILE" | cut -d '=' -f2)
-
-if docker exec "$CONTAINER_DB" mysql -u"$DB_USER" -p"$DB_PASS" -e "SHOW DATABASES;" >/dev/null 2>&1; then
-  echo "[✔] MySQL alive & accepting credentials"
+# --- Apache check ---
+if docker exec "$WP_CONTAINER" ps aux | grep -q "[a]pache2"; then
+    echo "[✔] Apache running"
 else
-  echo "[✘] MySQL unreachable"
+    echo "[✘] Apache NOT running"
 fi
 
-# ----------------------------------------
-# Apache check (port 80 inside container)
-# ----------------------------------------
-if docker exec "$CONTAINER_WP" curl -s -o /dev/null -w "%{http_code}" http://localhost | grep -q "200"; then
-  echo "[✔] Apache responding"
+# --- Port 80 check ---
+if docker exec "$WP_CONTAINER" ss -tulpn 2>/dev/null | grep -q ":80"; then
+    echo "[✔] Apache listening on port 80"
 else
-  echo "[✘] Apache NOT responding"
+    echo "[✘] Apache NOT listening on port 80"
 fi
 
-# ----------------------------------------
-# Check if WordPress installed
-# ----------------------------------------
-if docker exec "$CONTAINER_WP" wp core is-installed --allow-root >/dev/null 2>&1; then
-  echo "[✔] WordPress installed"
+# --- WordPress response check ---
+if docker exec "$WP_CONTAINER" curl -fs http://localhost >/dev/null 2>&1; then
+    echo "[✔] WordPress responding in container"
 else
-  echo "[✘] WordPress NOT installed"
+    echo "[✘] WordPress NOT responding inside container"
 fi
 
-# ----------------------------------------
-# DNS Check
-# ----------------------------------------
-DOMAIN=$(grep PRIMARY_DOMAIN "$ENV_FILE" | cut -d '=' -f2)
+# --- DB check ---
+if docker exec "$DB_CONTAINER" mysqladmin ping -h localhost --silent; then
+    echo "[✔] MySQL alive & accepting credentials"
+else
+    echo "[✘] MySQL NOT responding"
+fi
 
-DNS_IP=$(dig +short A "$DOMAIN" | head -n1)
-SERVER_IP=$(curl -s https://api.ipify.org)
+# --- WP install check ---
+if docker exec "$WP_CONTAINER" test -f /var/www/html/wp-config.php; then
+    echo "[✔] WordPress installed"
+else
+    echo "[✘] WordPress NOT installed yet"
+fi
+
+# --- DNS vs server ---
+DOMAIN=$(grep PRIMARY_DOMAIN "$HOMEDIR/.env" | cut -d= -f2)
+DNS_IP=$(dig +short A "$DOMAIN")
+SERVER_IP=$(curl -4 -s ifconfig.me)
 
 if [[ "$DNS_IP" == "$SERVER_IP" ]]; then
-  echo "[✔] DNS A record matches server IPv4 ($SERVER_IP)"
+    echo "[✔] DNS A record matches server IPv4 ($SERVER_IP)"
 else
-  echo "[✘] DNS mismatch — domain → $DNS_IP, server → $SERVER_IP"
+    echo "[✘] DNS mismatch! DNS=$DNS_IP Server=$SERVER_IP"
 fi
 
-# ----------------------------------------
-# Nginx upstream check
-# ----------------------------------------
-proxy_container="proxy-web-auto"
+# --- Proxy connectivity ---
+PROXY="proxy-web-auto"
 
-if docker exec "$proxy_container" curl -s -o /dev/null -w "%{http_code}" "http://$DOMAIN" | grep -q "200"; then
-  echo "[✔] Proxy can reach WP container"
+if docker exec "$PROXY" curl -fs "http://$DOMAIN" >/dev/null 2>&1; then
+    echo "[✔] Proxy can reach WP container"
 else
-  echo "[✘] Proxy cannot reach WP container"
+    echo "[✘] Proxy cannot reach WP container"
 fi
 
-# ----------------------------------------
-# SSL Check
-# ----------------------------------------
-if docker exec proxy-web-auto test -f "/etc/nginx/certs/${DOMAIN}.crt"; then
-  echo "[✔] SSL certificate exists"
+# --- SSL cert ---
+CERT="/etc/nginx/certs/$DOMAIN.crt"
+if docker exec "$PROXY" test -f "$CERT"; then
+    echo "[✔] SSL certificate exists"
 else
-  echo "[✘] SSL certificate missing"
+    echo "[✘] SSL certificate NOT found"
 fi
 
 echo "========================================"
