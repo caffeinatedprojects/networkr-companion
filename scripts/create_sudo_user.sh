@@ -4,35 +4,42 @@ set -euo pipefail
 ###############################################################################
 # create_sudo_user.sh
 #
-# Creates a *restricted* "customer admin" user:
-#   - Has a password (from --password)
-#   - SSH directory exists but no keys (Pressilion app will add keys later)
-#   - CAN use sudo for a small safe set of commands:
-#       - apt, apt-get, apt-cache
-#       - systemctl status *
-#       - systemctl restart ssh/cron
-#   - CANNOT:
-#       - get a root shell
-#       - use docker
-#       - edit sudoers
-#       - sudo any other command
+# JSON-only output for use by Pressilion / SSHTools.
 #
-# Example:
-#   sudo bash /home/networkr/networkr-companion/scripts/create_sudo_user.sh \
-#       --user pressillion \
-#       --password "MySecureTempPass123!"
+# Success:
+#   {"status":"success","message":"Restricted customer admin created","user":"USERNAME"}
+#
+# Error:
+#   {"status":"error","message":"Some error message","user":"USERNAME"}
+#
 ###############################################################################
 
 SUPER_USER="networkr"
 SUPER_HOME="/home/${SUPER_USER}"
 SUDOERS_DIR="/etc/sudoers.d"
 
+###############################################################################
+# Logging (stderr only) and JSON helpers
+###############################################################################
+
 log() {
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" >&2
+}
+
+json_success() {
+  local msg="$1"
+  local user="${CUSTOM_USER:-""}"
+  printf '{"status":"success","message":"%s","user":"%s"}\n' "$msg" "$user"
+}
+
+json_error() {
+  local msg="$1"
+  local user="${CUSTOM_USER:-""}"
+  printf '{"status":"error","message":"%s","user":"%s"}\n' "$msg" "$user"
 }
 
 usage() {
-  cat <<EOF
+  cat >&2 <<EOF
 Usage:
   $(basename "$0") --user USERNAME --password PLAIN_PASSWORD
 
@@ -49,10 +56,16 @@ EOF
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
-    echo "This script must be run as root." >&2
+    json_error "must_be_run_as_root"
     exit 1
   fi
 }
+
+###############################################################################
+# Global error trap -> always emit JSON on unexpected failure
+###############################################################################
+
+trap 'json_error "unexpected_error"; exit 1' ERR
 
 ###############################################################################
 # Parse arguments
@@ -73,18 +86,17 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       usage
-      exit 0
+      exit 1
       ;;
     *)
-      echo "Unknown argument: $1" >&2
-      usage
+      json_error "unknown_argument_$1"
       exit 1
       ;;
   esac
 done
 
 if [[ -z "${CUSTOM_USER}" || -z "${CUSTOM_PASS}" ]]; then
-  echo "ERROR: --user and --password are required." >&2
+  json_error "missing_required_arguments"
   usage
   exit 1
 fi
@@ -110,7 +122,7 @@ fi
 log "Setting password…"
 echo "${CUSTOM_USER}:${CUSTOM_PASS}" | chpasswd
 
-# Lock down home perms (owner only + group, no world access)
+# Lock down home perms (owner + group only, no world access)
 chown -R "${CUSTOM_USER}:${CUSTOM_USER}" "${CUSTOM_HOME}"
 chmod 750 "${CUSTOM_HOME}"
 
@@ -147,7 +159,7 @@ if [[ -d "${SUPER_HOME}/networkr-companion" ]]; then
 fi
 
 ###############################################################################
-# Restricted sudo rules (no aliases, no syntax tricks)
+# Restricted sudo rules (no aliases, no sudo group)
 ###############################################################################
 
 log "Writing restricted sudo rules…"
@@ -185,39 +197,24 @@ EOF
 
 chmod 440 "${SUDO_FILE}"
 
-# IMPORTANT: Do *not* add user to 'sudo' group, otherwise they'd get %sudo rules.
-# We only want the rule above to apply.
-# usermod -aG sudo "${CUSTOM_USER}"   # <-- INTENTIONALLY NOT DONE
+# Do NOT add to sudo group (would inherit %sudo rules)
+# usermod -aG sudo "${CUSTOM_USER}"  # <- intentionally omitted
 
 # Validate sudoers syntax
-if visudo -cf "${SUDO_FILE}"; then
-  log "Sudo rules validated successfully."
-else
-  log "ERROR: visudo validation failed for ${SUDO_FILE}. Removing file."
+if ! visudo -cf "${SUDO_FILE}" >/dev/null 2>&1; then
   rm -f "${SUDO_FILE}"
+  json_error "sudoers_validation_failed"
   exit 1
 fi
 
+log "Sudo rules validated successfully."
+
 ###############################################################################
-# Summary
+# Success JSON and clean exit
 ###############################################################################
 
-echo
-echo "====================================================="
-echo " Restricted Customer Admin Created"
-echo "====================================================="
-echo "User:      ${CUSTOM_USER}"
-echo "Home:      ${CUSTOM_HOME}"
-echo "Password:  (hidden — provided via script)"
-echo
-echo "SSH Keys:  NOT installed — Pressilion app will add keys."
-echo
-echo "Allowed via sudo:"
-echo "  - apt, apt-get, apt-cache"
-echo "  - systemctl status *"
-echo "  - systemctl restart ssh"
-echo "  - systemctl restart cron"
-echo
-echo "Everything else via sudo => NOT allowed."
-echo "Networkr home, root, and DO config protected by filesystem perms."
-echo "====================================================="
+# Disable ERR trap for the final success path to avoid double error JSON.
+trap - ERR
+
+json_success "Restricted customer admin created"
+exit 0
