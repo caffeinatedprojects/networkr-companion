@@ -7,6 +7,8 @@ TEMPLATE_ROOT="${NETWORKR_ROOT}/template"
 GROUP_ADMIN="pressadmin"
 DELETE_SCRIPT="${NETWORKR_ROOT}/scripts/pressilion-delete-site.sh"
 
+WP_ADMIN_USER=""
+
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
@@ -21,8 +23,13 @@ require_root() {
 usage() {
   cat <<EOF
 Usage:
-  pressilion-create-site --user USERNAME --website-id ID --domain DOMAIN \\
-                         --letsencrypt-email EMAIL [--wp-admin-email EMAIL]
+  pressilion-create-site \\
+    --user USERNAME \\
+    --website-id ID \\
+    --domain DOMAIN \\
+    --letsencrypt-email EMAIL \\
+    [--wp-admin-email EMAIL] \\
+    [--wp-admin-user USER]
 
 Creates a WordPress site using the Apache-based WordPress image.
 
@@ -54,6 +61,18 @@ generate_xkcd_password() {
   local num=$((RANDOM % 10))
 
   echo "${w1}-${w2}-${w3}-${w4}-${num}"
+}
+
+################################################################################
+# SIMPLE .env PARSER (for image names/versions)
+################################################################################
+
+env_get_var() {
+  local file="$1"
+  local key="$2"
+  if [[ -f "$file" ]]; then
+    grep -E "^${key}=" "$file" | tail -n1 | cut -d= -f2- || true
+  fi
 }
 
 ################################################################################
@@ -107,7 +126,7 @@ wait_for_db() {
       return 0
     fi
 
-    # Method 3 — direct socket query (bypass network + auth bugs)
+    # Method 3 — direct socket query (bypass network + auth quirks)
     if docker exec "${db_container}" bash -c \
         "echo 'SELECT 1;' | mariadb -uroot -p\"${root_password}\"" \
         >/dev/null 2>&1; then
@@ -169,11 +188,16 @@ get_version_info() {
   local db_container="$1"
   local cli_container="$2"
 
-  DB_VERSION_INFO=$(docker exec "${db_container}" mysql --version 2>/dev/null || echo "unknown")
+  # Try mysql first, then mariadb; suppress all errors
+  DB_VERSION_INFO=$(
+    docker exec "${db_container}" mysql --version 2>/dev/null ||
+    docker exec "${db_container}" mariadb --version 2>/dev/null ||
+    echo "unknown"
+  )
+
   WP_CORE_VERSION=$(docker exec "${cli_container}" wp core version --allow-root 2>/dev/null || echo "unknown")
   PHP_VERSION_INFO=$(docker exec "${cli_container}" php -r 'echo phpversion();' 2>/dev/null || echo "unknown")
 
-  # Export for use in summary
   export DB_VERSION_INFO WP_CORE_VERSION PHP_VERSION_INFO
 }
 
@@ -189,23 +213,54 @@ WP_ADMIN_EMAIL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --user) SITE_USER="$2"; shift 2 ;;
-    --website-id) WEBSITE_ID="$2"; shift 2 ;;
-    --domain) PRIMARY_DOMAIN="$2"; shift 2 ;;
-    --letsencrypt-email) LETSENCRYPT_EMAIL="$2"; shift 2 ;;
-    --wp-admin-email) WP_ADMIN_EMAIL="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown argument: $1"; exit 1 ;;
+    --user)
+      SITE_USER="$2"
+      shift 2
+      ;;
+    --website-id)
+      WEBSITE_ID="$2"
+      shift 2
+      ;;
+    --domain)
+      PRIMARY_DOMAIN="$2"
+      shift 2
+      ;;
+    --letsencrypt-email)
+      LETSENCRYPT_EMAIL="$2"
+      shift 2
+      ;;
+    --wp-admin-email)
+      WP_ADMIN_EMAIL="$2"
+      shift 2
+      ;;
+    --wp-admin-user)
+      WP_ADMIN_USER="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      exit 1
+      ;;
   esac
 done
 
-[[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]] && {
+if [[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]]; then
   echo "Missing required arguments."
   usage
   exit 1
-}
+fi
 
-[[ -z "$WP_ADMIN_EMAIL" ]] && WP_ADMIN_EMAIL="$LETSENCRYPT_EMAIL"
+if [[ -z "$WP_ADMIN_EMAIL" ]]; then
+  WP_ADMIN_EMAIL="$LETSENCRYPT_EMAIL"
+fi
+
+if [[ -z "$WP_ADMIN_USER" ]]; then
+  WP_ADMIN_USER="admin"
+fi
 
 ################################################################################
 # MAIN
@@ -274,7 +329,7 @@ MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
 DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
 
 WP_TITLE="${PRIMARY_DOMAIN}"
-WP_ADMIN_USER="admin"
+# Use caller-provided admin username (or default 'admin' from earlier)
 # XKCD-style admin temp password
 WP_ADMIN_TEMP_PASS="$(generate_xkcd_password)"
 WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
@@ -290,6 +345,12 @@ envsubst < "${ENV_TEMPLATE}" > "${ENV_TARGET}"
 
 chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${ENV_TARGET}"
 chmod 640 "${ENV_TARGET}"
+
+# Read actual image names/versions from the generated .env
+DB_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "DB_IMAGE")"
+DB_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "DB_VERSION")"
+SITE_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "SITE_IMAGE")"
+SITE_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "SITE_VERSION")"
 
 ################################################################################
 # docker-compose.yml
@@ -325,12 +386,10 @@ CLI_CONTAINER="${CONTAINER_CLI_NAME}"
 SITE_URL="https://${PRIMARY_DOMAIN}"
 
 if ! wait_for_db "${DB_CONTAINER}" "${MYSQL_ROOT_PASSWORD}"; then
-  # DB never came up – rollback the entire site
   rollback_site "${SITE_USER}"
   exit 1
 fi
 
-# Try auto-install of WordPress; if it fails, rollback as well
 if ! auto_install_wordpress "${CLI_CONTAINER}" "${SITE_URL}" "${WP_TITLE}" \
      "${WP_ADMIN_USER}" "${WP_ADMIN_TEMP_PASS}" "${WP_ADMIN_MAIL}"; then
   rollback_site "${SITE_USER}"
@@ -369,8 +428,8 @@ Primary Domain:
   Let's Encrypt:    ${LETSENCRYPT_EMAIL}
 
 Database:
-  Image:            mariadb:latest (from .env.template)
-  Reported:         ${DB_VERSION_INFO}
+  Image:            ${DB_IMAGE_NAME:-unknown}:${DB_IMAGE_VERSION:-unknown}
+  Version:          ${DB_VERSION_INFO}
   Name:             ${MYSQL_DATABASE}
   User:             ${MYSQL_USER}
   Password:         ${MYSQL_PASSWORD}
@@ -378,7 +437,7 @@ Database:
   Local Port:       ${DB_LOCAL_PORT}
 
 WordPress:
-  Image:            wordpress:latest (Apache)
+  Image:            ${SITE_IMAGE_NAME:-unknown}:${SITE_IMAGE_VERSION:-unknown}
   WP Core Version:  ${WP_CORE_VERSION}
   PHP Version:      ${PHP_VERSION_INFO}
   Title:            ${WP_TITLE}
