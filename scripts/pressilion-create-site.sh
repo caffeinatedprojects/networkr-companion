@@ -479,3 +479,6 @@ SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "SERVER-IP")"
 log "Generating JSON summary..."
 generate_json_summary > "${SITE_ROOT}/site-summary.json"
 log "JSON summary written to ${SITE_ROOT}/site-summary.json"
+
+# Output JSON to STDOUT for Pressillion
+generate_json_summary
