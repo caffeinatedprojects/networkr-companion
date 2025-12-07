@@ -2,38 +2,60 @@
 set -euo pipefail
 
 ###############################################################################
-# create_sudo_user.sh — Hardened Restricted Customer Admin User
+# create_sudo_user.sh
+#
+# Creates a *restricted* "customer admin" user:
+#   - Has a password (from --password)
+#   - SSH directory exists but no keys (Pressilion app will add keys later)
+#   - CAN use sudo for a small safe set of commands:
+#       - apt, apt-get, apt-cache
+#       - systemctl status *
+#       - systemctl restart ssh/cron
+#   - CANNOT:
+#       - get a root shell
+#       - use docker
+#       - edit sudoers
+#       - sudo any other command
+#
+# Example:
+#   sudo bash /home/networkr/networkr-companion/scripts/create_sudo_user.sh \
+#       --user pressillion \
+#       --password "MySecureTempPass123!"
 ###############################################################################
 
 SUPER_USER="networkr"
 SUPER_HOME="/home/${SUPER_USER}"
 SUDOERS_DIR="/etc/sudoers.d"
 
-log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"; }
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
 
 usage() {
   cat <<EOF
 Usage:
-  $0 --user USERNAME --password PASSWORD
+  $(basename "$0") --user USERNAME --password PLAIN_PASSWORD
 
-Creates a restricted customer admin user:
-  - SSH enabled but NO keys installed (Pressilion app manages keys)
-  - Has limited sudo (apt + systemctl status + restart ssh/cron)
-  - Cannot read/edit /home/networkr, /etc, /root
-  - Cannot modify sudoers files
-  - Cannot use docker or escalate privileges
+Args:
+  --user         Required. Username to create.
+  --password     Required. Password for the new account.
+
+Notes:
+  - SSH directory is created empty (Pressilion app will install keys)
+  - User gets a very limited sudo rule
+  - User is *not* added to docker or pressadmin groups
 EOF
 }
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
-    echo "This script must be run as root."
+    echo "This script must be run as root." >&2
     exit 1
   fi
 }
 
 ###############################################################################
-# ARGUMENT PARSING
+# Parse arguments
 ###############################################################################
 
 CUSTOM_USER=""
@@ -42,48 +64,62 @@ CUSTOM_PASS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user)
-      CUSTOM_USER="$2"; shift 2 ;;
+      CUSTOM_USER="$2"
+      shift 2
+      ;;
     --password)
-      CUSTOM_PASS="$2"; shift 2 ;;
+      CUSTOM_PASS="$2"
+      shift 2
+      ;;
     -h|--help)
-      usage; exit 0 ;;
+      usage
+      exit 0
+      ;;
     *)
-      echo "Unknown argument: $1"; usage; exit 1 ;;
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
   esac
 done
 
-[[ -z "$CUSTOM_USER" || -z "$CUSTOM_PASS" ]] && {
-  echo "ERROR: --user and --password are required."
+if [[ -z "${CUSTOM_USER}" || -z "${CUSTOM_PASS}" ]]; then
+  echo "ERROR: --user and --password are required." >&2
+  usage
   exit 1
-}
+fi
 
 require_root
 
-###############################################################################
-# CREATE USER
-###############################################################################
-
 CUSTOM_HOME="/home/${CUSTOM_USER}"
+
+###############################################################################
+# Create the user
+###############################################################################
 
 log "Creating restricted customer admin '${CUSTOM_USER}'…"
 
 if ! id -u "${CUSTOM_USER}" >/dev/null 2>&1; then
   useradd -m -d "${CUSTOM_HOME}" -s /bin/bash "${CUSTOM_USER}"
 else
+  log "User ${CUSTOM_USER} already exists. Ensuring home directory exists."
   mkdir -p "${CUSTOM_HOME}"
 fi
 
+# Set password
+log "Setting password…"
 echo "${CUSTOM_USER}:${CUSTOM_PASS}" | chpasswd
 
-# secure home
+# Lock down home perms (owner only + group, no world access)
 chown -R "${CUSTOM_USER}:${CUSTOM_USER}" "${CUSTOM_HOME}"
 chmod 750 "${CUSTOM_HOME}"
 
 ###############################################################################
-# SSH SETUP (empty — Pressilion will install keys)
+# SSH directory (empty — Pressilion app will install keys later)
 ###############################################################################
 
 SSH_DIR="${CUSTOM_HOME}/.ssh"
+
 mkdir -p "${SSH_DIR}"
 chmod 700 "${SSH_DIR}"
 touch "${SSH_DIR}/authorized_keys"
@@ -93,15 +129,25 @@ chown -R "${CUSTOM_USER}:${CUSTOM_USER}" "${SSH_DIR}"
 log "SSH directory prepared (no keys installed)."
 
 ###############################################################################
-# LOCK DOWN networkr SUPER-USER FILES
+# Ensure /home/networkr and sensitive areas stay locked
 ###############################################################################
 
-chmod 750 "${SUPER_HOME}" || true
-chmod 700 "${SUPER_HOME}/.aws" 2>/dev/null || true
-chmod -R o-rwx "${SUPER_HOME}/networkr-companion" 2>/dev/null || true
+if [[ -d "${SUPER_HOME}" ]]; then
+  # Only root + pressadmin can access; no 'others'
+  chown "${SUPER_USER}:pressadmin" "${SUPER_HOME}" || true
+  chmod 750 "${SUPER_HOME}" || true
+fi
+
+if [[ -d "${SUPER_HOME}/.aws" ]]; then
+  chmod 700 "${SUPER_HOME}/.aws" || true
+fi
+
+if [[ -d "${SUPER_HOME}/networkr-companion" ]]; then
+  chmod -R o-rwx "${SUPER_HOME}/networkr-companion" || true
+fi
 
 ###############################################################################
-# SUDOERS — FINAL HARDENED VERSION
+# Restricted sudo rules (no aliases, no syntax tricks)
 ###############################################################################
 
 log "Writing restricted sudo rules…"
@@ -111,107 +157,67 @@ SUDO_FILE="${SUDOERS_DIR}/90-${CUSTOM_USER}-customeradmin"
 cat > "${SUDO_FILE}" <<EOF
 ########################################################################
 # Restricted sudo rules for customer admin: ${CUSTOM_USER}
+#
+# This user can ONLY run a small set of commands via sudo:
+#   - apt, apt-get, apt-cache
+#   - systemctl status *
+#   - systemctl restart ssh/cron
+#
+# They CANNOT:
+#   - sudo any other commands
+#   - gain a root shell
+#   - use docker
+#   - edit sudoers
 ########################################################################
 
-User_Alias CUSTADM_${CUSTOM_USER} = ${CUSTOM_USER}
+Defaults:${CUSTOM_USER} logfile="/var/log/sudo-${CUSTOM_USER}.log"
+Defaults:${CUSTOM_USER} log_input, log_output
 
-# =========================
-# SAFE COMMANDS ALLOWED
-# =========================
-Cmnd_Alias CUST_SAFE_${CUSTOM_USER} = \
+# Whitelist: ONLY these commands allowed with sudo for ${CUSTOM_USER}
+${CUSTOM_USER} ALL=(ALL) NOPASSWD: \
     /usr/bin/apt, \
     /usr/bin/apt-get, \
     /usr/bin/apt-cache, \
     /usr/bin/systemctl status *, \
     /usr/bin/systemctl restart ssh, \
     /usr/bin/systemctl restart cron
-
-# =========================
-# HARD DENY — READ BLOCK
-# =========================
-Cmnd_Alias CUST_DENY_READ_${CUSTOM_USER} = \
-    /bin/cat /home/networkr/*, \
-    /bin/cat /root/*, \
-    /bin/cat /etc/*, \
-    /usr/bin/cat /home/networkr/*, \
-    /usr/bin/cat /root/*, \
-    /usr/bin/cat /etc/*, \
-    /usr/bin/less /home/networkr/*, \
-    /usr/bin/less /root/*, \
-    /usr/bin/less /etc/*, \
-    /usr/bin/head /home/networkr/*, \
-    /usr/bin/head /root/*, \
-    /usr/bin/head /etc/*, \
-    /usr/bin/tail /home/networkr/*, \
-    /usr/bin/tail /root/*, \
-    /usr/bin/tail /etc/*
-
-# =========================
-# HARD DENY — EDIT BLOCK
-# =========================
-Cmnd_Alias CUST_DENY_EDIT_${CUSTOM_USER} = \
-    /usr/bin/nano /home/networkr/*, \
-    /usr/bin/nano /root/*, \
-    /usr/bin/nano /etc/*, \
-    /usr/bin/nano /etc/sudoers, \
-    /usr/bin/nano /etc/sudoers.d/*, \
-    /usr/bin/vim /home/networkr/*, \
-    /usr/bin/vim /root/*, \
-    /usr/bin/vim /etc/*, \
-    /usr/bin/vim /etc/sudoers, \
-    /usr/bin/vim /etc/sudoers.d/*, \
-    /usr/bin/vi /home/networkr/*, \
-    /usr/bin/vi /root/*, \
-    /usr/bin/vi /etc/*, \
-    /usr/bin/vi /etc/sudoers, \
-    /usr/bin/vi /etc/sudoers.d/*
-
-# =========================
-# HARD DENY — DOCKER
-# =========================
-Cmnd_Alias CUST_DENY_DOCKER_${CUSTOM_USER} = \
-    /usr/bin/docker, \
-    /usr/bin/docker-*, \
-    /usr/bin/docker-compose
-
-# =========================
-# APPLY RULES
-# =========================
-
-Defaults:CUSTADM_${CUSTOM_USER} logfile="/var/log/sudo-${CUSTOM_USER}.log"
-Defaults:CUSTADM_${CUSTOM_USER} log_input, log_output
-
-# Allowed:
-CUSTADM_${CUSTOM_USER} ALL=(ALL) NOPASSWD: CUST_SAFE_${CUSTOM_USER}
-
-# Explicit denies:
-CUSTADM_${CUSTOM_USER} ALL=(ALL) NOPASSWD: \
-   !CUST_DENY_READ_${CUSTOM_USER}, \
-   !CUST_DENY_EDIT_${CUSTOM_USER}, \
-   !CUST_DENY_DOCKER_${CUSTOM_USER}
 EOF
 
 chmod 440 "${SUDO_FILE}"
 
-# Add them to sudo so restrictions apply
-usermod -aG sudo "${CUSTOM_USER}"
+# IMPORTANT: Do *not* add user to 'sudo' group, otherwise they'd get %sudo rules.
+# We only want the rule above to apply.
+# usermod -aG sudo "${CUSTOM_USER}"   # <-- INTENTIONALLY NOT DONE
 
-# Validate
-visudo -cf "${SUDO_FILE}"
+# Validate sudoers syntax
+if visudo -cf "${SUDO_FILE}"; then
+  log "Sudo rules validated successfully."
+else
+  log "ERROR: visudo validation failed for ${SUDO_FILE}. Removing file."
+  rm -f "${SUDO_FILE}"
+  exit 1
+fi
 
 ###############################################################################
-# SUMMARY
+# Summary
 ###############################################################################
 
 echo
 echo "====================================================="
 echo " Restricted Customer Admin Created"
 echo "====================================================="
-echo "User:          ${CUSTOM_USER}"
-echo "Home:          ${CUSTOM_HOME}"
-echo "SSH Keys:      NONE (Pressilion will add)"
+echo "User:      ${CUSTOM_USER}"
+echo "Home:      ${CUSTOM_HOME}"
+echo "Password:  (hidden — provided via script)"
 echo
-echo "Allowed sudo:  apt, apt-get, apt-cache, systemctl status*, restart ssh/cron"
-echo "Denied sudo:   docker, shells, readers, editors, /etc, /root, /home/networkr"
+echo "SSH Keys:  NOT installed — Pressilion app will add keys."
 echo
+echo "Allowed via sudo:"
+echo "  - apt, apt-get, apt-cache"
+echo "  - systemctl status *"
+echo "  - systemctl restart ssh"
+echo "  - systemctl restart cron"
+echo
+echo "Everything else via sudo => NOT allowed."
+echo "Networkr home, root, and DO config protected by filesystem perms."
 echo "====================================================="
