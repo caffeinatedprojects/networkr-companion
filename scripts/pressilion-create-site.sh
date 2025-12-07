@@ -86,25 +86,41 @@ wait_for_db() {
   local db_container="$1"
   local root_password="$2"
 
-  log "Waiting for database container '${db_container}' to become ready..."
+  log "Waiting for MariaDB/MySQL to accept SQL queries…"
 
-  # Give MariaDB/MySQL a generous first-time init window (up to ~6 minutes)
   local max_attempts=180
   local attempt=1
 
   while (( attempt <= max_attempts )); do
-    if docker exec "${db_container}" mysqladmin ping \
-      -h 127.0.0.1 -uroot -p"${root_password}" --silent >/dev/null 2>&1; then
-      log "✅ Database is responding (attempt ${attempt}/${max_attempts})."
+
+    # Method 1 — mysql client
+    if docker exec "${db_container}" mysql -uroot -p"${root_password}" \
+        -e "SELECT 1;" >/dev/null 2>&1; then
+      log "✅ DB ready (mysql client, attempt ${attempt}/${max_attempts})"
       return 0
     fi
 
-    log "Database ping failed… (${attempt}/${max_attempts})"
+    # Method 2 — mariadb client
+    if docker exec "${db_container}" mariadb -uroot -p"${root_password}" \
+        -e "SELECT 1;" >/dev/null 2>&1; then
+      log "✅ DB ready (mariadb client, attempt ${attempt}/${max_attempts})"
+      return 0
+    fi
+
+    # Method 3 — direct socket query (bypass network + auth bugs)
+    if docker exec "${db_container}" bash -c \
+        "echo 'SELECT 1;' | mariadb -uroot -p\"${root_password}\"" \
+        >/dev/null 2>&1; then
+      log "✅ DB ready (socket test, attempt ${attempt}/${max_attempts})"
+      return 0
+    fi
+
+    log "Database not ready… (${attempt}/${max_attempts})"
     sleep 2
     (( attempt++ ))
   done
 
-  log "❌ Failure: Database did not become ready in time."
+  log "❌ Database did not become ready in time."
   return 1
 }
 
