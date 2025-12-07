@@ -274,6 +274,61 @@ if [[ -z "$WP_ADMIN_USER" ]]; then
   WP_ADMIN_USER="admin"
 fi
 
+generate_json_summary() {
+  cat <<EOF
+{
+  "server": {
+    "ip": "${SERVER_IP}"
+  },
+  "user": {
+    "username": "${SITE_USER}",
+    "home_directory": "${SITE_HOME}"
+  },
+  "domain": {
+    "primary_domain": "${PRIMARY_DOMAIN}",
+    "public_url": "${SITE_URL}",
+    "letsencrypt_email": "${LETSENCRYPT_EMAIL}"
+  },
+  "database": {
+    "image": "mariadb:latest",
+    "version": "${DB_VERSION_INFO}",
+    "name": "${MYSQL_DATABASE}",
+    "user": "${MYSQL_USER}",
+    "password": "${MYSQL_PASSWORD}",
+    "root_password": "${MYSQL_ROOT_PASSWORD}",
+    "local_port": ${DB_LOCAL_PORT}
+  },
+  "wordpress": {
+    "image": "wordpress:latest",
+    "core_version": "${WP_CORE_VERSION}",
+    "php_version": "${PHP_VERSION_INFO}",
+    "title": "${WP_TITLE}",
+    "admin_user": "${WP_ADMIN_USER}",
+    "admin_email": "${WP_ADMIN_MAIL}",
+    "admin_temp_password": "${WP_ADMIN_TEMP_PASS}"
+  },
+  "ssh": {
+    "host": "${SERVER_IP}",
+    "port": 22,
+    "username": "${SITE_USER}",
+    "standard_ssh_command": "ssh ${SITE_USER}@${SERVER_IP}",
+    "sftp_command": "sftp ${SITE_USER}@${SERVER_IP}",
+    "db_tunnel": {
+      "local_port": ${DB_LOCAL_PORT},
+      "remote_host": "127.0.0.1",
+      "remote_port": ${DB_LOCAL_PORT},
+      "command": "ssh -L ${DB_LOCAL_PORT}:127.0.0.1:${DB_LOCAL_PORT} ${SITE_USER}@${SERVER_IP}"
+    }
+  },
+  "containers": {
+    "db_container": "${CONTAINER_DB_NAME}",
+    "wp_container": "${CONTAINER_SITE_NAME}",
+    "cli_container": "${CONTAINER_CLI_NAME}"
+  }
+}
+EOF
+}
+
 ################################################################################
 # MAIN
 ################################################################################
@@ -421,44 +476,6 @@ SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "SERVER-IP")"
 # SUMMARY
 ################################################################################
 
-cat <<EOF
-
-=====================================================
-Site Created Successfully
-=====================================================
-
-Server:
-  IP Address:       ${SERVER_IP}
-
-Linux user:
-  Username:         ${SITE_USER}
-  Home Directory:   ${SITE_HOME}
-
-Primary Domain:
-  Domain:           ${PRIMARY_DOMAIN}
-  Public URL:       ${SITE_URL}
-  Let's Encrypt:    ${LETSENCRYPT_EMAIL}
-
-Database:
-  Image:            ${DB_IMAGE_NAME:-unknown}:${DB_IMAGE_VERSION:-unknown}
-  Version:          ${DB_VERSION_INFO}
-  Name:             ${MYSQL_DATABASE}
-  User:             ${MYSQL_USER}
-  Password:         ${MYSQL_PASSWORD}
-  Root Password:    ${MYSQL_ROOT_PASSWORD}
-  Local Port:       ${DB_LOCAL_PORT}
-
-WordPress:
-  Image:            ${SITE_IMAGE_NAME:-unknown}:${SITE_IMAGE_VERSION:-unknown}
-  WP Core Version:  ${WP_CORE_VERSION}
-  PHP Version:      ${PHP_VERSION_INFO}
-  Title:            ${WP_TITLE}
-  Admin User:       ${WP_ADMIN_USER}
-  Admin Email:      ${WP_ADMIN_MAIL}
-  Temp Password:    ${WP_ADMIN_TEMP_PASS}
-
-SSH DB Tunnel:
-  ssh -L ${DB_LOCAL_PORT}:127.0.0.1:${DB_LOCAL_PORT} ${SITE_USER}@${SERVER_IP}
-
-=====================================================
-EOF
+log "Generating JSON summary..."
+generate_json_summary > "${SITE_ROOT}/site-summary.json"
+log "JSON summary written to ${SITE_ROOT}/site-summary.json"
