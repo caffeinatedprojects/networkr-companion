@@ -4,80 +4,86 @@ set -euo pipefail
 ###############################################################################
 # create_sudo_user.sh
 #
-# Creates a *heavily restricted* "customer admin" user:
-#   - Has a password (from --password)
-#   - SSH directory exists but no keys installed (Pressilion will manage keys)
-#   - CAN run: apt, apt-get, apt-cache, limited systemctl commands
-#   - CANNOT: read /home/networkr, use docker, get a root shell, read files as root
+# Creates a heavily restricted "customer admin" user.
 #
-#      sudo bash /home/networkr/networkr-companion/scripts/create_sudo_user.sh \
-#        --user pressilion \
-#        --password "MySecureTempPass123!"
+# Allowed:
+#   - apt, apt-get, apt-cache
+#   - systemctl (status, restart of their own services)
+#
+# Denied:
+#   - docker, docker-compose
+#   - su, sudo -i, shells, interpreters (python/php/node)
+#   - file readers (cat/less/more/nano/vim/vi/head/tail)
+#   - cannot read /home/networkr or companion files
+#
+# Example:
+#   sudo bash create_sudo_user.sh \
+#       --user pressilion \
+#       --password "SecurePass123!"
 ###############################################################################
 
 SUPER_USER="networkr"
 SUPER_HOME="/home/${SUPER_USER}"
-
 SUDOERS_DIR="/etc/sudoers.d"
 
 log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"; }
 
 usage() {
-  cat <<EOF
+cat <<EOF
 Usage:
-  $(basename "$0") --user USERNAME --password PLAIN_PASSWORD
+  $(basename "$0") --user USERNAME --password PASSWORD
 
-Args:
-  --user         Required. Username to create.
-  --password     Required. Password for the new account.
+Arguments:
+  --user         Username to create
+  --password     Password for the new account
 
 Notes:
-  - SSH directory is created empty (Pressilion app will install keys later)
-  - User is restricted with a custom sudoers profile
-  - User is NOT added to docker or pressadmin groups
+  - SSH directory created empty (Pressillion will install keys)
+  - User restricted via sudoers
+  - User NOT added to docker, pressadmin, or privileged groups
 EOF
 }
 
 require_root() {
-  if [[ "$(id -u)" -ne 0 ]]; then
-    echo "This script must be run as root." >&2
-    exit 1
-  fi
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "ERROR: Script must run as root." >&2
+        exit 1
+    fi
 }
 
 ###############################################################################
-# Parse arguments
+# PARSE ARGUMENTS
 ###############################################################################
 
 CUSTOM_USER=""
 CUSTOM_PASS=""
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --user)
-      CUSTOM_USER="$2"
-      shift 2
-      ;;
-    --password)
-      CUSTOM_PASS="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage
-      exit 1
-      ;;
-  esac
+    case "$1" in
+        --user)
+            CUSTOM_USER="$2"
+            shift 2
+            ;;
+        --password)
+            CUSTOM_PASS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            usage
+            exit 1
+            ;;
+    esac
 done
 
 if [[ -z "${CUSTOM_USER}" || -z "${CUSTOM_PASS}" ]]; then
-  echo "ERROR: --user and --password are required." >&2
-  usage
-  exit 1
+    echo "ERROR: --user and --password are required."
+    usage
+    exit 1
 fi
 
 require_root
@@ -85,16 +91,16 @@ require_root
 CUSTOM_HOME="/home/${CUSTOM_USER}"
 
 ###############################################################################
-# Create the user
+# CREATE USER
 ###############################################################################
 
-log "Creating restricted admin user '${CUSTOM_USER}'..."
+log "Creating restricted customer admin '${CUSTOM_USER}'..."
 
 if ! id -u "${CUSTOM_USER}" >/dev/null 2>&1; then
-  useradd -m -d "${CUSTOM_HOME}" -s /bin/bash "${CUSTOM_USER}"
+    useradd -m -d "${CUSTOM_HOME}" -s /bin/bash "${CUSTOM_USER}"
 else
-  log "User already exists. Ensuring home exists."
-  mkdir -p "${CUSTOM_HOME}"
+    log "User already exists. Ensuring home exists."
+    mkdir -p "${CUSTOM_HOME}"
 fi
 
 # Set password
@@ -105,41 +111,40 @@ chown -R "${CUSTOM_USER}:${CUSTOM_USER}" "${CUSTOM_HOME}"
 chmod 750 "${CUSTOM_HOME}"
 
 ###############################################################################
-# SSH directory (empty — Pressilion app will install keys later)
+# SSH DIRECTORY — EMPTY
 ###############################################################################
 
 SSH_DIR="${CUSTOM_HOME}/.ssh"
-
 mkdir -p "${SSH_DIR}"
 chmod 700 "${SSH_DIR}"
 touch "${SSH_DIR}/authorized_keys"
 chmod 600 "${SSH_DIR}/authorized_keys"
 chown -R "${CUSTOM_USER}:${CUSTOM_USER}" "${SSH_DIR}"
 
-log "SSH directory created empty — Pressilion app will install keys later."
+log "SSH directory created (empty). Pressilion app will install keys."
 
 ###############################################################################
-# Ensure /home/networkr stays locked
+# PROTECT THE SUPER USER (networkr)
 ###############################################################################
 
-if [[ -d "${SUPER_HOME}" ]]; then
-  chown "${SUPER_USER}:pressadmin" "${SUPER_HOME}" || true
-  chmod 750 "${SUPER_HOME}" || true
-fi
+# hide networkr files
+chmod 750 "${SUPER_HOME}" || true
 
+# hide AWS keys
 if [[ -d "${SUPER_HOME}/.aws" ]]; then
-  chmod 700 "${SUPER_HOME}/.aws" || true
+    chmod 700 "${SUPER_HOME}/.aws" || true
 fi
 
+# hide companion repo
 if [[ -d "${SUPER_HOME}/networkr-companion" ]]; then
-  chmod -R o-rwx "${SUPER_HOME}/networkr-companion" || true
+    chmod -R o-rwx "${SUPER_HOME}/networkr-companion" || true
 fi
 
 ###############################################################################
-# Sudo restrictions
+# SUDOERS — RESTRICTED PERMISSIONS
 ###############################################################################
 
-log "Creating restricted sudo profile..."
+log "Configuring restricted sudo rules…"
 
 SUDO_FILE="${SUDOERS_DIR}/90-${CUSTOM_USER}-customeradmin"
 
@@ -150,78 +155,76 @@ cat > "${SUDO_FILE}" <<EOF
 
 User_Alias CUSTADM_${CUSTOM_USER} = ${CUSTOM_USER}
 
-# SAFE commands allowed:
-Cmnd_Alias CUST_SAFE_${CUSTOM_USER} = \\
-    /usr/bin/apt, \\
-    /usr/bin/apt-get, \\
-    /usr/bin/apt-cache, \\
-    /usr/bin/systemctl status *, \\
-    /usr/bin/systemctl restart ssh, \\
-    /usr/bin/systemctl restart cron
+# Allowed commands (no wildcards allowed)
+Cmnd_Alias CUST_SAFE_${CUSTOM_USER} = \
+    /usr/bin/apt, \
+    /usr/bin/apt-get, \
+    /usr/bin/apt-cache, \
+    /usr/bin/systemctl
 
-# DENIED command groups (explicit):
-Cmnd_Alias CUST_DENY_SHELLS_${CUSTOM_USER} = \\
-    /bin/su, /usr/bin/su, \\
-    /bin/bash, /usr/bin/bash, \\
-    /bin/sh, /usr/bin/sh
+# Denied commands
+Cmnd_Alias CUST_DENY_${CUSTOM_USER} = \
+    /bin/su, /usr/bin/su, \
+    /bin/bash, /usr/bin/bash, \
+    /bin/sh, /usr/bin/sh, \
+    /usr/bin/docker, \
+    /usr/bin/docker-compose, \
+    /usr/bin/python3, \
+    /usr/bin/python, \
+    /usr/bin/php, \
+    /usr/bin/node, \
+    /usr/bin/nodejs, \
+    /usr/bin/nano, \
+    /usr/bin/vim, \
+    /usr/bin/vi, \
+    /usr/bin/cat, \
+    /usr/bin/less, \
+    /usr/bin/more, \
+    /usr/bin/head, \
+    /usr/bin/tail
 
-Cmnd_Alias CUST_DENY_INTERPRETERS_${CUSTOM_USER} = \\
-    /usr/bin/python*, /usr/bin/perl*, /usr/bin/php*, /usr/bin/ruby*, /usr/bin/node*, /usr/bin/nodejs*
-
-Cmnd_Alias CUST_DENY_READERS_${CUSTOM_USER} = \\
-    /bin/cat, /usr/bin/cat, \\
-    /usr/bin/less, /usr/bin/more, /usr/bin/head, /usr/bin/tail
-
-Cmnd_Alias CUST_DENY_EDITORS_${CUSTOM_USER} = \\
-    /usr/bin/nano, /usr/bin/vi, /usr/bin/vim
-
-Cmnd_Alias CUST_DENY_DOCKER_${CUSTOM_USER} = \\
-    /usr/bin/docker, /usr/bin/docker-compose
-
+# Logging
 Defaults:CUSTADM_${CUSTOM_USER} logfile="/var/log/sudo-${CUSTOM_USER}.log"
 Defaults:CUSTADM_${CUSTOM_USER} log_input, log_output
 
-# Allowed
+# Allowed rules
 CUSTADM_${CUSTOM_USER} ALL=(ALL) NOPASSWD: CUST_SAFE_${CUSTOM_USER}
 
-# Explicit denies
-CUSTADM_${CUSTOM_USER} ALL=(ALL) NOPASSWD: \\
-    !CUST_DENY_SHELLS_${CUSTOM_USER}, \\
-    !CUST_DENY_INTERPRETERS_${CUSTOM_USER}, \\
-    !CUST_DENY_READERS_${CUSTOM_USER}, \\
-    !CUST_DENY_EDITORS_${CUSTOM_USER}, \\
-    !CUST_DENY_DOCKER_${CUSTOM_USER}
+# Must explicitly forbid dangerous commands
+CUSTADM_${CUSTOM_USER} ALL=(ALL) NOPASSWD: !CUST_DENY_${CUSTOM_USER}
+
 EOF
 
 chmod 440 "${SUDO_FILE}"
 
-# Add to sudo group (required for restricted rules to apply)
+# Add user to sudo group so rules apply
 usermod -aG sudo "${CUSTOM_USER}"
 
+# Validate
 visudo -cf "${SUDO_FILE}"
 
 ###############################################################################
-# Summary
+# SUMMARY
 ###############################################################################
 
 echo
 echo "====================================================="
-echo " Restricted Customer Admin Created"
+echo " Customer Admin User Created"
 echo "====================================================="
-echo "User:      ${CUSTOM_USER}"
-echo "Home:      ${CUSTOM_HOME}"
-echo "Password:  (hidden — passed via script)"
+echo "User:           ${CUSTOM_USER}"
+echo "Home:           ${CUSTOM_HOME}"
+echo "Password:       (hidden)"
+echo "SSH Keys:       Not installed — Pressillion app will add"
 echo
-echo "SSH Keys:  NOT installed — Pressilion app will add keys"
+echo "ALLOWED VIA SUDO:"
+echo "  • apt / apt-get / apt-cache"
+echo "  • systemctl (general)"
 echo
-echo "Allowed sudo:"
-echo "  - apt, apt-get, apt-cache"
-echo "  - systemctl status *"
-echo "  - restart ssh/cron only"
+echo "DENIED VIA SUDO:"
+echo "  • docker & docker-compose"
+echo "  • su / shells / sudo -i"
+echo "  • cat / nano / vim / less / head / tail"
+echo "  • python / php / node"
 echo
-echo "Denied:"
-echo "  - root shells, su, sudo -i"
-echo "  - docker / docker-compose"
-echo "  - editors & file readers as root"
-echo "  - interpreters as root"
+echo "Networkr super-user is protected and hidden."
 echo "====================================================="
