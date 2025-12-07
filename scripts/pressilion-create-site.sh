@@ -188,13 +188,25 @@ get_version_info() {
   local db_container="$1"
   local cli_container="$2"
 
-  # Try mysql first, then mariadb; suppress all errors
-  DB_VERSION_INFO=$(
+  # Try mysql first, then mariadb
+  RAW_DB_VERSION=$(
     docker exec "${db_container}" mysql --version 2>/dev/null ||
     docker exec "${db_container}" mariadb --version 2>/dev/null ||
     echo "unknown"
   )
 
+  # ------------------------------------------------------------
+  # Extract just "12.1.2-MariaDB" or "8.0.40" cleanly
+  # ------------------------------------------------------------
+  if [[ "$RAW_DB_VERSION" == "unknown" ]]; then
+    DB_VERSION_INFO="unknown"
+  else
+    # Remove leading noise, keep version-like tokens
+    DB_VERSION_INFO=$(echo "$RAW_DB_VERSION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-MariaDB)?')
+    [[ -z "$DB_VERSION_INFO" ]] && DB_VERSION_INFO="$RAW_DB_VERSION"
+  fi
+
+  # WordPress + PHP versions
   WP_CORE_VERSION=$(docker exec "${cli_container}" wp core version --allow-root 2>/dev/null || echo "unknown")
   PHP_VERSION_INFO=$(docker exec "${cli_container}" php -r 'echo phpversion();' 2>/dev/null || echo "unknown")
 
