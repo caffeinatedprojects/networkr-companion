@@ -8,8 +8,7 @@ GROUP_ADMIN="pressadmin"
 DELETE_SCRIPT="${NETWORKR_ROOT}/scripts/pressilion-delete-site.sh"
 
 log() {
-  # use epoch + human-readable
-  echo "[$(date +'%s.%6N')] $*" | awk '{print strftime("[%Y-%m-%d %H:%M:%S]", $1) " " substr($0, index($0,$2))}'
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
 
 require_root() {
@@ -26,96 +25,140 @@ Usage:
                          --letsencrypt-email EMAIL [--wp-admin-email EMAIL]
 
 Creates a WordPress site using the Apache-based WordPress image.
+
+Notes:
+  - DB image/version are taken from template/.env.template (e.g. mariadb:latest)
+  - WordPress image/version are taken from template/.env.template (e.g. wordpress:latest)
 EOF
 }
 
-# Simple XKCD-style password generator: word-word-word-word-N
-xkcd_password() {
-  local words=(Substance Inside Pound Provide Rocket Forest Marble Signal Anchor Velvet)
-  local w1 w2 w3 w4 num
-  w1="${words[$RANDOM % ${#words[@]}]}"
-  w2="${words[$RANDOM % ${#words[@]}]}"
-  w3="${words[$RANDOM % ${#words[@]}]}"
-  w4="${words[$RANDOM % ${#words[@]}]}"
-  num=$((RANDOM % 10))
+################################################################################
+# XKCD-STYLE PASSWORD GENERATOR (for WP admin temp password only)
+################################################################################
+
+generate_xkcd_password() {
+  # Short curated list of readable words – good enough for human-usable strong pass
+  local words=(
+    Anchor Battle Candle Dragon Ember Forest Galaxy Hammer Ivory Journey
+    Kingdom Lantern Meadow Nexus Orbit Prism Quartz Rocket Summit Thunder
+    Umbra Velvet Willow Xenon Yonder Zenith Harbor Pixel Matrix Compass
+    Spirit Silver Stone Shadow River Breeze Cosmic Mystic Noble Titan
+    Ranger Cipher Phantom Velvet Wolf Solar Lunar Neon Emberstorm
+  )
+  local count=${#words[@]}
+
+  local w1=${words[$((RANDOM % count))]}
+  local w2=${words[$((RANDOM % count))]}
+  local w3=${words[$((RANDOM % count))]}
+  local w4=${words[$((RANDOM % count))]}
+  local num=$((RANDOM % 10))
+
   echo "${w1}-${w2}-${w3}-${w4}-${num}"
 }
 
-rollback_and_exit() {
-  local site_user="$1"
-  local domain="$2"
-  local reason="$3"
+################################################################################
+# ROLLBACK / DELETE SITE HELPER
+################################################################################
 
-  log "❌ Failure: ${reason}"
-  if [[ -x "${DELETE_SCRIPT}" ]]; then
-    log "Rolling back by calling delete script for user '${site_user}'..."
-    "${DELETE_SCRIPT}" --user "${site_user}" --domain "${domain}" || true
+rollback_site() {
+  local site_user="$1"
+
+  log "⚠️  Failure detected, attempting rollback for site user '${site_user}'..."
+
+  if [[ -f "${DELETE_SCRIPT}" ]]; then
+    log "Running delete script: ${DELETE_SCRIPT} ${site_user}"
+    # Use bash explicitly; do NOT require +x on the delete script
+    if bash "${DELETE_SCRIPT}" "${site_user}"; then
+      log "✅ Rollback completed for ${site_user}."
+    else
+      log "❌ Rollback script reported an error while deleting ${site_user}."
+    fi
   else
     log "⚠️ Delete script not found at ${DELETE_SCRIPT}, rollback skipped."
   fi
-  exit 1
 }
 
-detect_server_ip() {
-  # Prefer non-loopback IPv4
-  hostname -I 2>/dev/null | awk '{for (i=1;i<=NF;i++){if ($i ~ /^[0-9]+\./){print $i; exit}}}' || echo "UNKNOWN"
-}
+################################################################################
+# WAIT FOR DB TO BE READY (MySQL/MariaDB)
+################################################################################
 
-wait_for_mysql() {
-  local container="$1"
-  local db_name="$2"
-  local db_user="$3"
-  local db_pass="$4"
-  local max_attempts=90
+wait_for_db() {
+  local db_container="$1"
+  local root_password="$2"
+
+  log "Waiting for database container '${db_container}' to become ready..."
+
+  # Give MariaDB/MySQL a generous first-time init window (up to ~6 minutes)
+  local max_attempts=180
   local attempt=1
 
-  log "Waiting for MySQL/MariaDB to become ready (max ${max_attempts} attempts)..."
-
   while (( attempt <= max_attempts )); do
-    if docker exec "${container}" mysql -u"${db_user}" -p"${db_pass}" -e "SELECT 1" "${db_name}" >/dev/null 2>&1; then
-      log "MySQL/MariaDB is ready after ${attempt} attempts."
+    if docker exec "${db_container}" mysqladmin ping \
+      -h 127.0.0.1 -uroot -p"${root_password}" --silent >/dev/null 2>&1; then
+      log "✅ Database is responding (attempt ${attempt}/${max_attempts})."
       return 0
     fi
-    log "MySQL ping failed… (${attempt}/${max_attempts})"
+
+    log "Database ping failed… (${attempt}/${max_attempts})"
     sleep 2
     (( attempt++ ))
   done
 
+  log "❌ Failure: Database did not become ready in time."
   return 1
 }
 
+################################################################################
+# AUTO-INSTALL WORDPRESS VIA WP-CLI
+################################################################################
+
 auto_install_wordpress() {
   local cli_container="$1"
-  local url="$2"
+  local site_url="$2"
   local title="$3"
   local admin_user="$4"
   local admin_pass="$5"
   local admin_email="$6"
-  local locale="$7"
 
-  log "Running WordPress auto-install via WP-CLI..."
+  log "Checking if WordPress is already installed in ${cli_container}..."
 
-  # If already installed, skip
-  if docker exec "${cli_container}" wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
-    log "WordPress already installed — skipping auto-install."
+  # If WP is already installed, don't touch it
+  if docker exec "${cli_container}" wp core is-installed --allow-root >/dev/null 2>&1; then
+    log "WordPress already installed. Skipping auto-install."
     return 0
   fi
 
-  if ! docker exec "${cli_container}" wp core install \
-      --url="${url}" \
+  log "Running WP-CLI core install..."
+  if docker exec "${cli_container}" wp core install \
+      --url="${site_url}" \
       --title="${title}" \
       --admin_user="${admin_user}" \
       --admin_password="${admin_pass}" \
       --admin_email="${admin_email}" \
       --skip-email \
-      --locale="${locale}" \
-      --allow-root \
-      --path=/var/www/html >/dev/null 2>&1; then
+      --allow-root >/dev/null 2>&1; then
+    log "✅ WordPress auto-install completed successfully."
+    return 0
+  else
+    log "❌ WordPress auto-install failed."
     return 1
   fi
+}
 
-  log "WordPress core installed successfully."
-  return 0
+################################################################################
+# CAPTURE VERSIONS FOR SUMMARY
+################################################################################
+
+get_version_info() {
+  local db_container="$1"
+  local cli_container="$2"
+
+  DB_VERSION_INFO=$(docker exec "${db_container}" mysql --version 2>/dev/null || echo "unknown")
+  WP_CORE_VERSION=$(docker exec "${cli_container}" wp core version --allow-root 2>/dev/null || echo "unknown")
+  PHP_VERSION_INFO=$(docker exec "${cli_container}" php -r 'echo phpversion();' 2>/dev/null || echo "unknown")
+
+  # Export for use in summary
+  export DB_VERSION_INFO WP_CORE_VERSION PHP_VERSION_INFO
 }
 
 ################################################################################
@@ -163,7 +206,8 @@ if ! id -u "${SITE_USER}" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "${SITE_USER}"
   passwd -l "${SITE_USER}" || true
 else
-  usermod -s /bin/bash "${SITE_USER}" || true
+  # Ensure home exists even if user already present
+  mkdir -p "${SITE_HOME}"
 fi
 
 # Group setup
@@ -171,7 +215,7 @@ if ! getent group "${GROUP_ADMIN}" >/dev/null; then
   groupadd "${GROUP_ADMIN}"
 fi
 
-usermod -g "${SITE_USER}" "${SITE_USER}"
+usermod -g "${SITE_USER}" "${SITE_USER}" || true
 chown "${SITE_USER}:${GROUP_ADMIN}" "${SITE_HOME}"
 chmod 750 "${SITE_HOME}"
 
@@ -180,6 +224,7 @@ mkdir -p "${DATA_DIR}/backup" "${DATA_DIR}/temp" "${DATA_DIR}/db" "${DATA_DIR}/s
 chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
 chmod -R 770 "${DATA_DIR}"
 
+# Copy template structure
 log "Syncing template data structure..."
 rsync -a "${TEMPLATE_ROOT}/data/" "${DATA_DIR}/"
 chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
@@ -205,18 +250,17 @@ CONTAINER_DB_NAME="${COMPOSE_PROJECT_NAME}-db"
 CONTAINER_SITE_NAME="${COMPOSE_PROJECT_NAME}-wp"
 CONTAINER_CLI_NAME="${COMPOSE_PROJECT_NAME}-cli"
 
-# XKCD-style passwords
 MYSQL_DATABASE="wp_${WEBSITE_ID}"
 MYSQL_USER="wp_${WEBSITE_ID}_u"
-MYSQL_PASSWORD="$(xkcd_password)"
-MYSQL_ROOT_PASSWORD="$(xkcd_password)"
+MYSQL_PASSWORD="$(openssl rand -hex 16)"
+MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
 
-# Avoid octal interpretation of WEBSITE_ID with leading zeros
-DB_LOCAL_PORT=$((33060 + 10#$WEBSITE_ID))
+DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
 
 WP_TITLE="${PRIMARY_DOMAIN}"
 WP_ADMIN_USER="admin"
-WP_ADMIN_TEMP_PASS="$(xkcd_password)"
+# XKCD-style admin temp password
+WP_ADMIN_TEMP_PASS="$(generate_xkcd_password)"
 WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
 WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
@@ -251,30 +295,40 @@ log "Bringing up the Docker stack..."
 cd "${SITE_ROOT}"
 
 if ! docker compose up -d --build; then
-  rollback_and_exit "${SITE_USER}" "${PRIMARY_DOMAIN}" "docker compose up failed."
+  log "❌ docker compose up failed for ${SITE_USER}."
+  rollback_site "${SITE_USER}"
+  exit 1
 fi
 
 ################################################################################
-# WAIT FOR DB & AUTO-INSTALL WORDPRESS
+# WAIT FOR DB, THEN AUTO-INSTALL WORDPRESS
 ################################################################################
 
-if ! wait_for_mysql "${CONTAINER_DB_NAME}" "${MYSQL_DATABASE}" "${MYSQL_USER}" "${MYSQL_PASSWORD}"; then
-  rollback_and_exit "${SITE_USER}" "${PRIMARY_DOMAIN}" "MySQL/MariaDB did not become ready in time."
+DB_CONTAINER="${CONTAINER_DB_NAME}"
+CLI_CONTAINER="${CONTAINER_CLI_NAME}"
+SITE_URL="https://${PRIMARY_DOMAIN}"
+
+if ! wait_for_db "${DB_CONTAINER}" "${MYSQL_ROOT_PASSWORD}"; then
+  # DB never came up – rollback the entire site
+  rollback_site "${SITE_USER}"
+  exit 1
 fi
 
-WP_URL="https://${PRIMARY_DOMAIN}"
-if ! auto_install_wordpress "${CONTAINER_CLI_NAME}" "${WP_URL}" "${WP_TITLE}" \
-    "${WP_ADMIN_USER}" "${WP_ADMIN_TEMP_PASS}" "${WP_ADMIN_MAIL}" "en_GB"; then
-  rollback_and_exit "${SITE_USER}" "${PRIMARY_DOMAIN}" "WordPress auto-install failed."
+# Try auto-install of WordPress; if it fails, rollback as well
+if ! auto_install_wordpress "${CLI_CONTAINER}" "${SITE_URL}" "${WP_TITLE}" \
+     "${WP_ADMIN_USER}" "${WP_ADMIN_TEMP_PASS}" "${WP_ADMIN_MAIL}"; then
+  rollback_site "${SITE_USER}"
+  exit 1
 fi
 
 ################################################################################
-# VERSION DISCOVERY
+# COLLECT VERSION INFO
 ################################################################################
 
-DB_VERSION_STR="$(docker exec "${CONTAINER_DB_NAME}" mysql --version 2>/dev/null || echo "unknown")"
-WP_VERSION_STR="$(docker exec "${CONTAINER_CLI_NAME}" wp core version --allow-root --path=/var/www/html 2>/dev/null || echo "unknown")"
-SERVER_IP="$(detect_server_ip)"
+get_version_info "${DB_CONTAINER}" "${CLI_CONTAINER}"
+
+# Determine server IP for summary (best-effort)
+SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "SERVER-IP")"
 
 ################################################################################
 # SUMMARY
@@ -290,16 +344,17 @@ Server:
   IP Address:       ${SERVER_IP}
 
 Linux user:
-  User:             ${SITE_USER}
+  Username:         ${SITE_USER}
   Home Directory:   ${SITE_HOME}
 
 Primary Domain:
   Domain:           ${PRIMARY_DOMAIN}
-  URL:              https://${PRIMARY_DOMAIN}
+  Public URL:       ${SITE_URL}
   Let's Encrypt:    ${LETSENCRYPT_EMAIL}
 
 Database:
-  Engine Version:   ${DB_VERSION_STR}
+  Image:            mariadb:latest (from .env.template)
+  Reported:         ${DB_VERSION_INFO}
   Name:             ${MYSQL_DATABASE}
   User:             ${MYSQL_USER}
   Password:         ${MYSQL_PASSWORD}
@@ -307,7 +362,9 @@ Database:
   Local Port:       ${DB_LOCAL_PORT}
 
 WordPress:
-  Core Version:     ${WP_VERSION_STR}
+  Image:            wordpress:latest (Apache)
+  WP Core Version:  ${WP_CORE_VERSION}
+  PHP Version:      ${PHP_VERSION_INFO}
   Title:            ${WP_TITLE}
   Admin User:       ${WP_ADMIN_USER}
   Admin Email:      ${WP_ADMIN_MAIL}
