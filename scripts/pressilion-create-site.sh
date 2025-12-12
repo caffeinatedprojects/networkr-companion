@@ -481,4 +481,6 @@ generate_json_summary > "${SITE_ROOT}/site-summary.json"
 log "JSON summary written to ${SITE_ROOT}/site-summary.json"
 
 # Output JSON to STDOUT for Pressillion
+echo "::PRESSILION_JSON_START::"
 generate_json_summary
+echo "::PRESSILION_JSON_END::"
