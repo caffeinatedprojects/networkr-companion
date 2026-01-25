@@ -175,14 +175,51 @@ auto_install_wordpress() {
 }
 
 ################################################################################
+# PERMISSIONS: MAKE BIND-MOUNT WRITABLE FOR WORDPRESS (www-data in container)
+################################################################################
+
+fix_wordpress_permissions() {
+  local site_root="$1"
+  local site_user="$2"
+  local group_admin="$3"
+
+  local wp_content="${site_root}/data/site/wp-content"
+
+  log "Fixing WordPress permissions (bind-mount) for container www-data..."
+
+  # Ensure expected dirs exist
+  mkdir -p "${wp_content}"
+
+  # Keep host ownership consistent for isolation/admin access
+  chown -R "${site_user}:${group_admin}" "${site_root}/data/site" || true
+
+  # Keep base perms sane (not locking container out)
+  find "${site_root}/data/site" -type d -exec chmod 775 {} \; || true
+  find "${site_root}/data/site" -type f -exec chmod 664 {} \; || true
+
+  # Grant container user access via ACL (UID 33 == www-data in official WP image)
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -R -m u:33:rwx "${wp_content}" || true
+    setfacl -R -m d:u:33:rwx "${wp_content}" || true
+
+    # Also allow group_admin full access (handy when editing on host)
+    setfacl -R -m g:"${group_admin}":rwx "${wp_content}" || true
+    setfacl -R -m d:g:"${group_admin}":rwx "${wp_content}" || true
+
+    log "✅ ACL applied to wp-content for UID 33 (www-data) and group ${group_admin}"
+  else
+    log "⚠️ setfacl not found. Install 'acl' package or WordPress may not be able to write."
+    log "    sudo apt-get update && sudo apt-get install -y acl"
+  fi
+}
+
+################################################################################
 # INSTALL PRESSILLION HEALTH MU-PLUGIN (host-side copy)
 ################################################################################
 
 install_pressillion_health_mu_plugin() {
   local site_root="$1"
   local template_root="$2"
-  local site_user="$3"
-  local group_admin="$4"
 
   local plugin_src="${template_root}/mu-plugins/pressillion-health.php"
   local mu_dir="${site_root}/data/site/wp-content/mu-plugins"
@@ -193,17 +230,9 @@ install_pressillion_health_mu_plugin() {
     return 0
   fi
 
-  # Important: do this AFTER WordPress has populated files.
-  # Otherwise the WP image may refuse to copy core files on first boot.
   log "Installing Pressillion Health MU-plugin..."
-
   mkdir -p "${mu_dir}"
   cp -f "${plugin_src}" "${plugin_dst}"
-
-  chown -R "${site_user}:${group_admin}" "${site_root}/data/site/wp-content" || true
-  chmod -R 770 "${site_root}/data/site/wp-content" || true
-  chmod 660 "${plugin_dst}" || true
-
   log "✅ MU-plugin installed: ${plugin_dst}"
 }
 
@@ -422,7 +451,6 @@ WP_ADMIN_TEMP_PASS="$(generate_xkcd_password)"
 WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
 WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
-# NEW: per-site secret for Pressillion Health
 PRESSILLION_PING_SECRET="$(openssl rand -hex 32)"
 
 export WEBSITE_ID COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
@@ -436,11 +464,6 @@ envsubst < "${ENV_TEMPLATE}" > "${ENV_TARGET}"
 
 chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${ENV_TARGET}"
 chmod 640 "${ENV_TARGET}"
-
-DB_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "DB_IMAGE")"
-DB_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "DB_VERSION")"
-SITE_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "SITE_IMAGE")"
-SITE_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "SITE_VERSION")"
 
 ################################################################################
 # docker-compose.yml
@@ -490,7 +513,13 @@ fi
 # INSTALL MU-PLUGIN (AFTER WORDPRESS FILES EXIST)
 ################################################################################
 
-install_pressillion_health_mu_plugin "${SITE_ROOT}" "${TEMPLATE_ROOT}" "${SITE_USER}" "${GROUP_ADMIN}"
+install_pressillion_health_mu_plugin "${SITE_ROOT}" "${TEMPLATE_ROOT}"
+
+################################################################################
+# FIX PERMISSIONS SO WORDPRESS CAN READ/WRITE THEMES/MEDIA/PLUGINS
+################################################################################
+
+fix_wordpress_permissions "${SITE_ROOT}" "${SITE_USER}" "${GROUP_ADMIN}"
 
 ################################################################################
 # COLLECT VERSION INFO
