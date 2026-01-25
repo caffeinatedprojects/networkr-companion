@@ -181,41 +181,41 @@ auto_install_wordpress() {
 }
 
 ################################################################################
-# INSTALL PRESSILLION HEALTH MU-PLUGIN (minimal perms changes)
+# COPY MU-PLUGINS INTO WP-CONTENT (post-install, minimal scope)
 ################################################################################
 
-install_pressillion_health_mu_plugin() {
-  local data_dir="$1"
-  local template_root="$2"
+install_mu_plugins() {
+  local site_user="$1"
 
-  local plugin_src="${template_root}/mu-plugins/pressillion-health.php"
-  local wp_content_dir="${data_dir}/site/wp-content"
-  local mu_dir="${wp_content_dir}/mu-plugins"
-  local plugin_dst="${mu_dir}/pressillion-health.php"
+  local src_dir="/home/networkr/networkr-companion/template/mu-plugins"
+  local dst_root="/home/${site_user}/data/site/wp-content"
+  local dst_dir="${dst_root}/mu-plugins"
 
-  if [[ ! -f "${plugin_src}" ]]; then
-    log "⚠️ Pressillion Health MU-plugin not found at ${plugin_src}. Skipping."
-    return 0
+  if [[ ! -d "${src_dir}" ]]; then
+    log "⚠️ MU-plugins source folder not found: ${src_dir}"
+    return 1
   fi
 
-  if [[ ! -d "${wp_content_dir}" ]]; then
-    log "⚠️ wp-content not found at ${wp_content_dir}. Skipping MU-plugin install."
-    return 0
+  if [[ ! -d "${dst_root}" ]]; then
+    log "⚠️ Target wp-content not found (is WordPress fully up yet?): ${dst_root}"
+    return 1
   fi
 
-  log "Installing Pressillion Health MU-plugin..."
-  mkdir -p "${mu_dir}"
-  cp -f "${plugin_src}" "${plugin_dst}"
+  log "Copying MU-plugins into ${dst_dir}..."
 
-  # Match existing wp-content ownership ONLY for mu-plugins + the plugin file
-  local wp_uid wp_gid
-  wp_uid="$(stat -c '%u' "${wp_content_dir}")"
-  wp_gid="$(stat -c '%g' "${wp_content_dir}")"
+  mkdir -p "${dst_dir}"
 
-  chown "${wp_uid}:${wp_gid}" "${mu_dir}" || true
-  chown "${wp_uid}:${wp_gid}" "${plugin_dst}" || true
+  # Copy folder contents (keeps it simple; overwrites existing plugin files)
+  rsync -a --delete "${src_dir}/" "${dst_dir}/"
 
-  log "✅ MU-plugin installed: ${plugin_dst}"
+  # Ensure ownership matches the rest of the site (your requirement)
+  chown -R www-data:www-data "${dst_dir}"
+
+  # Permissions: dirs 755, files 644 (only within mu-plugins)
+  find "${dst_dir}" -type d -exec chmod 755 {} \;
+  find "${dst_dir}" -type f -exec chmod 644 {} \;
+
+  log "✅ MU-plugins installed."
 }
 
 ################################################################################
@@ -502,10 +502,10 @@ if ! auto_install_wordpress "${CLI_CONTAINER}" "${SITE_URL}" "${WP_TITLE}" \
 fi
 
 ################################################################################
-# INSTALL MU-PLUGIN (NO HOST PERMISSION CHANGES)
+# INSTALL MU-PLUGINS (minimal scope, only mu-plugins folder perms)
 ################################################################################
 
-install_pressillion_health_mu_plugin "${CLI_CONTAINER}" "${TEMPLATE_ROOT}"
+install_mu_plugins "${SITE_USER}"
 
 ################################################################################
 # COLLECT VERSION INFO
