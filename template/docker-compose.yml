@@ -43,6 +43,8 @@ services:
       - ${SITE_FILES}:/var/www/html
       - ./conf.d/php.ini:/usr/local/etc/php/conf.d/php.ini
     environment:
+      WEBSITE_ID: ${WEBSITE_ID}
+      PRESSILLION_PING_SECRET: ${PRESSILLION_PING_SECRET}
       WORDPRESS_DB_HOST: ${CONTAINER_DB_NAME}:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}

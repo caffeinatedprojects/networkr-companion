@@ -24,6 +24,7 @@ endif
 dc = cd $(SITE_ROOT) && docker compose
 
 .PHONY: start down restart wpinfo install clean reset siteurl setup config-list \
+        env-set env-update-domains \
         changedomain db-import db-export backup import legacy-import \
         theme-list theme-activate theme-delete plugin-list plugin-activate plugin-delete
 
@@ -78,11 +79,60 @@ setup:
 config-list:
 	docker exec $(CONTAINER_CLI_NAME) wp config list
 
-# Usage: make SITE_ROOT=... SITE_USER=... changedomain domain_old='old-domain.com'
+# ----------------------------------------------------------------------
+# ENV helpers
+# ----------------------------------------------------------------------
+# Usage:
+#   make env-set SITE_ROOT=... key=PRIMARY_DOMAIN value=example.com
+env-set:
+	@if [ -z "$(key)" ] || [ -z "$(value)" ]; then \
+		echo "$(COLOUR_RED)Usage: make env-set SITE_ROOT=... key=KEY value=VALUE$(COLOUR_END)"; \
+		exit 1; \
+	fi
+	@mkdir -p $(SITE_ROOT)
+	@if [ ! -f "$(ENV_FILE)" ]; then \
+		touch "$(ENV_FILE)"; \
+	fi
+	@if grep -qE '^$(key)=' "$(ENV_FILE)"; then \
+		sed -i "s|^$(key)=.*|$(key)=$(value)|" "$(ENV_FILE)"; \
+	else \
+		echo "$(key)=$(value)" >> "$(ENV_FILE)"; \
+	fi
+
+# Usage:
+#   make env-update-domains SITE_ROOT=... new_domain=example.com domains="example.com,www.example.com" letsencrypt_email="me@example.com"
+env-update-domains:
+	@if [ -z "$(new_domain)" ]; then \
+		echo "$(COLOUR_RED)Usage: make env-update-domains SITE_ROOT=... new_domain=example.com domains=\"example.com,www.example.com\" [letsencrypt_email=\"me@example.com\"]$(COLOUR_END)"; \
+		exit 1; \
+	fi
+	@if [ -z "$(domains)" ]; then \
+		domains="$(new_domain),www.$(new_domain)"; \
+	fi
+	@echo "$(COLOUR_BLUE)Updating $(ENV_FILE) domain keys...$(COLOUR_END)"
+	@$(MAKE) env-set SITE_ROOT="$(SITE_ROOT)" key=PRIMARY_DOMAIN value="$(new_domain)"
+	@$(MAKE) env-set SITE_ROOT="$(SITE_ROOT)" key=PRIMARY_URL value="https://$(new_domain)"
+	@$(MAKE) env-set SITE_ROOT="$(SITE_ROOT)" key=URL_WITHOUT_HTTP value="$(new_domain)"
+	@$(MAKE) env-set SITE_ROOT="$(SITE_ROOT)" key=DOMAINS value="$(domains)"
+	@if [ -n "$(letsencrypt_email)" ]; then \
+		$(MAKE) env-set SITE_ROOT="$(SITE_ROOT)" key=LETSENCRYPT_EMAIL value="$(letsencrypt_email)"; \
+	fi
+	@echo "$(COLOUR_GREEN).env updated$(COLOUR_END)"
+
+# ----------------------------------------------------------------------
+# Domain change
+# ----------------------------------------------------------------------
+# Usage:
+#   make SITE_ROOT=... changedomain domain_old='old-domain.com'
+# Optional:
+#   make SITE_ROOT=... changedomain domain_old='old-domain.com' new_domain='new.com' domains='new.com,www.new.com' letsencrypt_email='me@new.com'
 changedomain:
 	@if [ -z "$(domain_old)" ]; then \
-		echo "$(COLOUR_RED)Usage: make changedomain SITE_ROOT=... SITE_USER=... domain_old=old-domain.com$(COLOUR_END)"; \
+		echo "$(COLOUR_RED)Usage: make changedomain SITE_ROOT=... domain_old=old-domain.com$(COLOUR_END)"; \
 		exit 1; \
+	fi
+	@if [ -n "$(new_domain)" ]; then \
+		$(MAKE) env-update-domains SITE_ROOT="$(SITE_ROOT)" new_domain="$(new_domain)" domains="$(domains)" letsencrypt_email="$(letsencrypt_email)"; \
 	fi
 	@echo "Replacing $(COLOUR_RED)$(domain_old)$(COLOUR_END) >>> $(COLOUR_GREEN)$(URL_WITHOUT_HTTP)$(COLOUR_END)"
 	$(dc) up -d --build
@@ -92,6 +142,7 @@ changedomain:
 	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old)" "$(URL_WITHOUT_HTTP)" --skip-columns=guid
 	$(dc) down
 	$(dc) up -d --build
+	@echo "$(COLOUR_GREEN)changedomain complete$(COLOUR_END)"
 
 db-export:
 	@echo "$(COLOUR_BLUE)Exporting database $(MYSQL_DATABASE)...$(COLOUR_END)"
@@ -150,7 +201,6 @@ legacy-import:
 theme-list:
 	docker exec $(CONTAINER_CLI_NAME) wp theme list --format=json
 
-# Usage: make theme-activate theme=twentytwentytwo
 theme-activate:
 	@if [ -z "$(theme)" ]; then \
 		echo "$(COLOUR_RED)Usage: make theme-activate theme=theme-slug$(COLOUR_END)"; \
@@ -168,7 +218,6 @@ theme-delete:
 plugin-list:
 	docker exec $(CONTAINER_CLI_NAME) wp plugin list --format=json
 
-# Usage: make plugin-activate plugin=woocommerce
 plugin-activate:
 	@if [ -z "$(plugin)" ]; then \
 		echo "$(COLOUR_RED)Usage: make plugin-activate plugin=plugin-slug$(COLOUR_END)"; \
