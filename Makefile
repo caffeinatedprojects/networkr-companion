@@ -1,6 +1,8 @@
 # Central Makefile for managing per-site Docker WordPress stacks
-# Usage:
-#   make SITE_ROOT=/home/user-site-123 SITE_USER=user-site-123 start
+# Lives at: /home/networkr/networkr-companion/Makefile
+# Usage examples:
+#   sudo make SITE_ROOT=/home/user-site-123 SITE_USER=user-site-123 start
+#   sudo make SITE_ROOT=/home/user-site-123 SITE_USER=user-site-123 changedomain domain_old=old.com new_domain=new.com
 
 SHELL := /bin/bash
 
@@ -9,9 +11,7 @@ SITE_USER ?= user-site-123
 
 ENV_FILE := $(SITE_ROOT)/.env
 
-# Proxy stack (lives under /home/networkr)
-# Override if needed:
-#   make proxy-restart PROXY_ROOT=/home/networkr/networkr-companion/proxy
+# Proxy stack (optional). If compose file missing, we fall back to container restarts.
 PROXY_ROOT ?= /home/networkr/networkr-companion/proxy
 PROXY_COMPOSE ?= $(PROXY_ROOT)/docker-compose.yml
 
@@ -55,12 +55,12 @@ install:
 	@echo "$(COLOUR_BLUE)Bringing containers up and installing WordPress...$(COLOUR_END)"
 	$(dc) up -d --build
 	docker exec $(CONTAINER_CLI_NAME) wp core install \
-	  --path="/var/www/html" \
-	  --url="$(PRIMARY_URL)" \
-	  --title=$(WP_TITLE) \
-	  --admin_user="$(WP_ADMIN_USER)" \
-	  --admin_password="$(WP_ADMIN_TEMP_PASS)" \
-	  --admin_email="$(WP_ADMIN_MAIL)"
+		--path="/var/www/html" \
+		--url="$(PRIMARY_URL)" \
+		--title=$(WP_TITLE) \
+		--admin_user="$(WP_ADMIN_USER)" \
+		--admin_password="$(WP_ADMIN_TEMP_PASS)" \
+		--admin_email="$(WP_ADMIN_MAIL)"
 
 clean:
 	@echo "💥 Removing related folders/files under $(SITE_ROOT)/data..."
@@ -74,13 +74,12 @@ siteurl:
 setup:
 	@echo "$(COLOUR_BLUE)Running WP core install and permalinks setup...$(COLOUR_END)"
 	docker exec $(CONTAINER_CLI_NAME) wp core install \
-	  --path="/var/www/html" \
-	  --url="$(PRIMARY_URL)" \
-	  --title=$(WP_TITLE) \
-	  --admin_user="$(WP_ADMIN_USER)" \
-	  --admin_password="$(WP_ADMIN_TEMP_PASS)" \
-	  --admin_email="$(WP_ADMIN_MAIL)"
-
+		--path="/var/www/html" \
+		--url="$(PRIMARY_URL)" \
+		--title=$(WP_TITLE) \
+		--admin_user="$(WP_ADMIN_USER)" \
+		--admin_password="$(WP_ADMIN_TEMP_PASS)" \
+		--admin_email="$(WP_ADMIN_MAIL)"
 	docker exec $(CONTAINER_CLI_NAME) wp rewrite structure $(WP_PERMA_STRUCTURE)
 
 config-list:
@@ -89,8 +88,6 @@ config-list:
 # ----------------------------------------------------------------------
 # Proxy helpers
 # ----------------------------------------------------------------------
-# Restarts the central proxy stack so it re-reads new domains + triggers cert issuance.
-# Expected to be run as root (or a user with docker perms).
 proxy-restart:
 	@echo "$(COLOUR_BLUE)Restarting central proxy stack...$(COLOUR_END)"
 	@if [ -f "$(PROXY_COMPOSE)" ]; then \
@@ -107,8 +104,6 @@ proxy-restart:
 # ----------------------------------------------------------------------
 # ENV helpers
 # ----------------------------------------------------------------------
-# Usage:
-#   make env-set SITE_ROOT=... key=PRIMARY_DOMAIN value=example.com
 env-set:
 	@if [ -z "$(key)" ] || [ -z "$(value)" ]; then \
 		echo "$(COLOUR_RED)Usage: make env-set SITE_ROOT=... key=KEY value=VALUE$(COLOUR_END)"; \
@@ -124,8 +119,6 @@ env-set:
 		echo "$(key)=$(value)" >> "$(ENV_FILE)"; \
 	fi
 
-# Usage:
-#   make env-update-domains SITE_ROOT=... new_domain=example.com domains="example.com,www.example.com" letsencrypt_email="me@example.com"
 env-update-domains:
 	@if [ -z "$(new_domain)" ]; then \
 		echo "$(COLOUR_RED)Usage: make env-update-domains SITE_ROOT=... new_domain=example.com domains=\"example.com,www.example.com\" [letsencrypt_email=\"me@example.com\"]$(COLOUR_END)"; \
@@ -147,10 +140,10 @@ env-update-domains:
 # ----------------------------------------------------------------------
 # Domain change
 # ----------------------------------------------------------------------
-# Usage:
-#   make SITE_ROOT=... changedomain domain_old='old-domain.com'
-# Optional:
-#   make SITE_ROOT=... changedomain domain_old='old-domain.com' new_domain='new.com' domains='new.com,www.new.com' letsencrypt_email='me@new.com'
+# Important:
+# - Does NOT modify permalinks
+# - Waits for DB readiness before running wp-cli
+# - Runs robust search-replace patterns (https://www, https://, bare)
 changedomain:
 	@if [ -z "$(domain_old)" ]; then \
 		echo "$(COLOUR_RED)Usage: make changedomain SITE_ROOT=... domain_old=old-domain.com$(COLOUR_END)"; \
@@ -159,16 +152,33 @@ changedomain:
 	@if [ -n "$(new_domain)" ]; then \
 		$(MAKE) env-update-domains SITE_ROOT="$(SITE_ROOT)" new_domain="$(new_domain)" domains="$(domains)" letsencrypt_email="$(letsencrypt_email)"; \
 	fi
+
 	@echo "Replacing $(COLOUR_RED)$(domain_old)$(COLOUR_END) >>> $(COLOUR_GREEN)$(URL_WITHOUT_HTTP)$(COLOUR_END)"
 	$(dc) up -d --build
+
+	@echo "$(COLOUR_BLUE)Waiting for DB to be ready...$(COLOUR_END)"
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+		docker exec $(CONTAINER_CLI_NAME) wp db check --quiet >/dev/null 2>&1 && break; \
+		echo "DB not ready yet (try $$i/15)"; \
+		sleep 2; \
+	done; \
+	docker exec $(CONTAINER_CLI_NAME) wp db check --quiet >/dev/null 2>&1 || (echo "$(COLOUR_RED)DB never became ready$(COLOUR_END)"; exit 1)
+
 	docker exec $(CONTAINER_CLI_NAME) wp option update home "$(PRIMARY_URL)"
 	docker exec $(CONTAINER_CLI_NAME) wp option update siteurl "$(PRIMARY_URL)"
+
 	@echo "$(COLOUR_GREEN)Running search/replace on database...$(COLOUR_END)"
-	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old)" "$(URL_WITHOUT_HTTP)" --skip-columns=guid
+	@OLD="$(domain_old)"; NEW="$(URL_WITHOUT_HTTP)"; \
+	docker exec $(CONTAINER_CLI_NAME) wp search-replace "https://www.$$OLD" "https://www.$$NEW" --all-tables --precise --recurse-objects --skip-columns=guid; \
+	docker exec $(CONTAINER_CLI_NAME) wp search-replace "https://$$OLD" "https://$$NEW" --all-tables --precise --recurse-objects --skip-columns=guid; \
+	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$$OLD" "$$NEW" --all-tables --precise --recurse-objects --skip-columns=guid
+
 	$(dc) down
 	$(dc) up -d --build
+
 	@echo "$(COLOUR_BLUE)Restarting proxy to trigger SSL issuance...$(COLOUR_END)"
 	@$(MAKE) proxy-restart
+
 	@echo "$(COLOUR_GREEN)changedomain complete$(COLOUR_END)"
 
 db-export:
@@ -176,15 +186,15 @@ db-export:
 	@rm -rf $(SITE_ROOT)/data/temp/*
 	@mkdir -p $(SITE_ROOT)/data/temp
 	docker exec $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysqldump --databases "$$MYSQL_DATABASE" -u"root" -p"$$MYSQL_ROOT_PASSWORD"' \
-	  > $(SITE_ROOT)/data/temp/mysql.sql
+		sh -c 'exec mysqldump --databases "$$MYSQL_DATABASE" -u"root" -p"$$MYSQL_ROOT_PASSWORD"' \
+		> $(SITE_ROOT)/data/temp/mysql.sql
 	@echo "$(COLOUR_GREEN)Backup saved to 'data/temp/mysql.sql'$(COLOUR_END)"
 
 db-import:
 	@echo "$(COLOUR_BLUE)Importing database from data/temp/mysql.sql...$(COLOUR_END)"
 	docker exec -i $(CONTAINER_DB_NAME) \
-	  sh -c 'exec mysql -u"root" -p"$$MYSQL_ROOT_PASSWORD" "$$MYSQL_DATABASE"' \
-	  < $(SITE_ROOT)/data/temp/mysql.sql
+		sh -c 'exec mysql -u"root" -p"$$MYSQL_ROOT_PASSWORD" "$$MYSQL_DATABASE"' \
+		< $(SITE_ROOT)/data/temp/mysql.sql
 	@echo "$(COLOUR_GREEN)Database import complete.$(COLOUR_END)"
 
 backup: db-export
