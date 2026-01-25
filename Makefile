@@ -9,6 +9,12 @@ SITE_USER ?= user-site-123
 
 ENV_FILE := $(SITE_ROOT)/.env
 
+# Proxy stack (lives under /home/networkr)
+# Override if needed:
+#   make proxy-restart PROXY_ROOT=/home/networkr/networkr-companion/proxy
+PROXY_ROOT ?= /home/networkr/networkr-companion/proxy
+PROXY_COMPOSE ?= $(PROXY_ROOT)/docker-compose.yml
+
 COLOUR_GREEN=\033[0;32m
 COLOUR_RED=\033[0;31m
 COLOUR_BLUE=\033[0;34m
@@ -25,6 +31,7 @@ dc = cd $(SITE_ROOT) && docker compose
 
 .PHONY: start down restart wpinfo install clean reset siteurl setup config-list \
         env-set env-update-domains \
+        proxy-restart \
         changedomain db-import db-export backup import legacy-import \
         theme-list theme-activate theme-delete plugin-list plugin-activate plugin-delete
 
@@ -78,6 +85,24 @@ setup:
 
 config-list:
 	docker exec $(CONTAINER_CLI_NAME) wp config list
+
+# ----------------------------------------------------------------------
+# Proxy helpers
+# ----------------------------------------------------------------------
+# Restarts the central proxy stack so it re-reads new domains + triggers cert issuance.
+# Expected to be run as root (or a user with docker perms).
+proxy-restart:
+	@echo "$(COLOUR_BLUE)Restarting central proxy stack...$(COLOUR_END)"
+	@if [ -f "$(PROXY_COMPOSE)" ]; then \
+		cd "$(PROXY_ROOT)" && docker compose down && docker compose up -d; \
+		echo "$(COLOUR_GREEN)Proxy restarted via docker compose at $(PROXY_ROOT)$(COLOUR_END)"; \
+	else \
+		echo "$(COLOUR_YELLOW)Proxy compose not found at $(PROXY_COMPOSE). Falling back to container restarts if present...$(COLOUR_END)"; \
+		if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy$$'; then docker restart nginx-proxy; fi; \
+		if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-acme$$'; then docker restart nginx-proxy-acme; fi; \
+		if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-automation$$'; then docker restart nginx-proxy-automation; fi; \
+		echo "$(COLOUR_GREEN)Proxy restart fallback complete$(COLOUR_END)"; \
+	fi
 
 # ----------------------------------------------------------------------
 # ENV helpers
@@ -142,6 +167,8 @@ changedomain:
 	docker exec $(CONTAINER_CLI_NAME) wp search-replace "$(domain_old)" "$(URL_WITHOUT_HTTP)" --skip-columns=guid
 	$(dc) down
 	$(dc) up -d --build
+	@echo "$(COLOUR_BLUE)Restarting proxy to trigger SSL issuance...$(COLOUR_END)"
+	@$(MAKE) proxy-restart
 	@echo "$(COLOUR_GREEN)changedomain complete$(COLOUR_END)"
 
 db-export:
