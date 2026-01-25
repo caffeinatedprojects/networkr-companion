@@ -194,26 +194,31 @@ install_pressillion_health_mu_plugin() {
     return 0
   fi
 
-  log "Installing Pressillion Health MU-plugin inside container..."
+  # If the container isn't there yet, don't kill the script.
+  if ! docker ps --format '{{.Names}}' | grep -qx "${cli_container}"; then
+    log "⚠️ CLI container ${cli_container} not running yet. Skipping MU-plugin install."
+    return 0
+  fi
 
-  # Figure out where WordPress lives in the container (official image uses /var/www/html)
+  log "Installing Pressillion Health MU-plugin inside container (non-fatal)..."
+
   local wp_path="/var/www/html"
   local mu_dir="${wp_path}/wp-content/mu-plugins"
   local plugin_dst="${mu_dir}/pressillion-health.php"
 
-  # Create mu-plugins dir (inside container) – do not chmod/chown anything else
-  docker exec "${cli_container}" bash -lc "mkdir -p '${mu_dir}'"
+  # Everything below must be non-fatal
+  docker exec "${cli_container}" bash -lc "mkdir -p '${mu_dir}'" >/dev/null 2>&1 || true
+  docker cp "${plugin_src}" "${cli_container}:${plugin_dst}" >/dev/null 2>&1 || true
+  docker exec "${cli_container}" bash -lc "chmod 644 '${plugin_dst}'" >/dev/null 2>&1 || true
 
-  # Copy plugin file into the running container
-  docker cp "${plugin_src}" "${cli_container}:${plugin_dst}"
+  # Optional: log only
+  if docker exec "${cli_container}" bash -lc "test -f '${plugin_dst}'" >/dev/null 2>&1; then
+    log "✅ MU-plugin installed: ${plugin_dst}"
+  else
+    log "⚠️ MU-plugin copy did not complete (non-fatal)."
+  fi
 
-  # Ensure file is readable by the web process (no broad permission rewrites)
-  docker exec "${cli_container}" bash -lc "chmod 644 '${plugin_dst}' || true"
-
-  # Optional: quick sanity check (does not fail the build if WP isn't ready)
-  docker exec "${cli_container}" bash -lc "test -f '${plugin_dst}' && echo '✅ MU-plugin present' || echo '❌ MU-plugin missing'"
-
-  log "✅ MU-plugin installed at ${plugin_dst}"
+  return 0
 }
 
 ################################################################################
