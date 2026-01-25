@@ -181,6 +181,42 @@ auto_install_wordpress() {
 }
 
 ################################################################################
+# INSTALL PRESSILLION HEALTH MU-PLUGIN (NO PERMISSION CHANGES)
+################################################################################
+
+install_pressillion_health_mu_plugin() {
+  local cli_container="$1"
+  local template_root="$2"
+  local plugin_src="${template_root}/mu-plugins/pressillion-health.php"
+
+  if [[ ! -f "${plugin_src}" ]]; then
+    log "⚠️ Pressillion Health MU-plugin not found at ${plugin_src}. Skipping."
+    return 0
+  fi
+
+  log "Installing Pressillion Health MU-plugin inside container..."
+
+  # Figure out where WordPress lives in the container (official image uses /var/www/html)
+  local wp_path="/var/www/html"
+  local mu_dir="${wp_path}/wp-content/mu-plugins"
+  local plugin_dst="${mu_dir}/pressillion-health.php"
+
+  # Create mu-plugins dir (inside container) – do not chmod/chown anything else
+  docker exec "${cli_container}" bash -lc "mkdir -p '${mu_dir}'"
+
+  # Copy plugin file into the running container
+  docker cp "${plugin_src}" "${cli_container}:${plugin_dst}"
+
+  # Ensure file is readable by the web process (no broad permission rewrites)
+  docker exec "${cli_container}" bash -lc "chmod 644 '${plugin_dst}' || true"
+
+  # Optional: quick sanity check (does not fail the build if WP isn't ready)
+  docker exec "${cli_container}" bash -lc "test -f '${plugin_dst}' && echo '✅ MU-plugin present' || echo '❌ MU-plugin missing'"
+
+  log "✅ MU-plugin installed at ${plugin_dst}"
+}
+
+################################################################################
 # CAPTURE VERSIONS FOR SUMMARY
 ################################################################################
 
@@ -462,6 +498,12 @@ if ! auto_install_wordpress "${CLI_CONTAINER}" "${SITE_URL}" "${WP_TITLE}" \
   rollback_site "${SITE_USER}"
   exit 1
 fi
+
+################################################################################
+# INSTALL MU-PLUGIN (NO HOST PERMISSION CHANGES)
+################################################################################
+
+install_pressillion_health_mu_plugin "${CLI_CONTAINER}" "${TEMPLATE_ROOT}"
 
 ################################################################################
 # COLLECT VERSION INFO
