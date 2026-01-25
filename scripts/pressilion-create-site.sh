@@ -181,44 +181,41 @@ auto_install_wordpress() {
 }
 
 ################################################################################
-# INSTALL PRESSILLION HEALTH MU-PLUGIN (NO PERMISSION CHANGES)
+# INSTALL PRESSILLION HEALTH MU-PLUGIN (minimal perms changes)
 ################################################################################
 
 install_pressillion_health_mu_plugin() {
-  local cli_container="$1"
+  local data_dir="$1"
   local template_root="$2"
+
   local plugin_src="${template_root}/mu-plugins/pressillion-health.php"
+  local wp_content_dir="${data_dir}/site/wp-content"
+  local mu_dir="${wp_content_dir}/mu-plugins"
+  local plugin_dst="${mu_dir}/pressillion-health.php"
 
   if [[ ! -f "${plugin_src}" ]]; then
     log "⚠️ Pressillion Health MU-plugin not found at ${plugin_src}. Skipping."
     return 0
   fi
 
-  # If the container isn't there yet, don't kill the script.
-  if ! docker ps --format '{{.Names}}' | grep -qx "${cli_container}"; then
-    log "⚠️ CLI container ${cli_container} not running yet. Skipping MU-plugin install."
+  if [[ ! -d "${wp_content_dir}" ]]; then
+    log "⚠️ wp-content not found at ${wp_content_dir}. Skipping MU-plugin install."
     return 0
   fi
 
-  log "Installing Pressillion Health MU-plugin inside container (non-fatal)..."
+  log "Installing Pressillion Health MU-plugin..."
+  mkdir -p "${mu_dir}"
+  cp -f "${plugin_src}" "${plugin_dst}"
 
-  local wp_path="/var/www/html"
-  local mu_dir="${wp_path}/wp-content/mu-plugins"
-  local plugin_dst="${mu_dir}/pressillion-health.php"
+  # Match existing wp-content ownership ONLY for mu-plugins + the plugin file
+  local wp_uid wp_gid
+  wp_uid="$(stat -c '%u' "${wp_content_dir}")"
+  wp_gid="$(stat -c '%g' "${wp_content_dir}")"
 
-  # Everything below must be non-fatal
-  docker exec "${cli_container}" bash -lc "mkdir -p '${mu_dir}'" >/dev/null 2>&1 || true
-  docker cp "${plugin_src}" "${cli_container}:${plugin_dst}" >/dev/null 2>&1 || true
-  docker exec "${cli_container}" bash -lc "chmod 644 '${plugin_dst}'" >/dev/null 2>&1 || true
+  chown "${wp_uid}:${wp_gid}" "${mu_dir}" || true
+  chown "${wp_uid}:${wp_gid}" "${plugin_dst}" || true
 
-  # Optional: log only
-  if docker exec "${cli_container}" bash -lc "test -f '${plugin_dst}'" >/dev/null 2>&1; then
-    log "✅ MU-plugin installed: ${plugin_dst}"
-  else
-    log "⚠️ MU-plugin copy did not complete (non-fatal)."
-  fi
-
-  return 0
+  log "✅ MU-plugin installed: ${plugin_dst}"
 }
 
 ################################################################################
