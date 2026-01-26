@@ -18,6 +18,7 @@ Usage:
 Workflow:
   - Update .env (PRIMARY_DOMAIN, PRIMARY_URL, URL_WITHOUT_HTTP, DOMAINS, LETSENCRYPT_EMAIL)
   - Restart docker (down/up)
+  - Wait for DB (mariadb-admin ping, since mysql client may not exist in image)
   - wp-cli option updates + search-replace (all-tables, precise, recurse-objects)
   - Restart proxy
   - Restart docker again
@@ -104,7 +105,6 @@ proxy_restart() {
 
     fi
 
-    # Fallback to known container names (matches your prior Makefile behaviour)
     if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy$'; then docker restart nginx-proxy || true; fi
     if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-acme$'; then docker restart nginx-proxy-acme || true; fi
     if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-automation$'; then docker restart nginx-proxy-automation || true; fi
@@ -123,8 +123,7 @@ wait_for_db() {
 
     while [[ $i -le $tries ]]; do
 
-        # Use an actual query. mysqladmin ping can be flaky depending on image/init timing.
-        if docker exec "${CONTAINER_DB_NAME}" sh -lc "mysql -uroot -p\"${MYSQL_ROOT_PASSWORD}\" -e 'SELECT 1' >/dev/null 2>&1"; then
+        if docker exec "${CONTAINER_DB_NAME}" sh -lc 'mariadb-admin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
             log "DB is responding."
             return 0
         fi
@@ -169,6 +168,10 @@ log "Loading updated .env into script environment..."
 set +u
 source "${ENV_FILE}"
 set -u
+
+log "Sanity: containers from env:"
+log "  CONTAINER_DB_NAME=${CONTAINER_DB_NAME:-}"
+log "  CONTAINER_CLI_NAME=${CONTAINER_CLI_NAME:-}"
 
 log "Step 2/5: Restarting Docker so containers pick up env..."
 restart_site_docker
