@@ -44,7 +44,6 @@ EOF
 ################################################################################
 
 generate_xkcd_password() {
-  # Short curated list of readable words – good enough for human-usable strong pass
   local words=(
     Anchor Battle Candle Dragon Ember Forest Galaxy Hammer Ivory Journey
     Kingdom Lantern Meadow Nexus Orbit Prism Quartz Rocket Summit Thunder
@@ -86,7 +85,6 @@ rollback_site() {
 
   if [[ -f "${DELETE_SCRIPT}" ]]; then
     log "Running delete script: ${DELETE_SCRIPT} ${site_user}"
-    # Use bash explicitly; do NOT require +x on the delete script
     if bash "${DELETE_SCRIPT}" "${site_user}"; then
       log "✅ Rollback completed for ${site_user}."
     else
@@ -112,21 +110,18 @@ wait_for_db() {
 
   while (( attempt <= max_attempts )); do
 
-    # Method 1 — mysql client
     if docker exec "${db_container}" mysql -uroot -p"${root_password}" \
         -e "SELECT 1;" >/dev/null 2>&1; then
       log "✅ DB ready (mysql client, attempt ${attempt}/${max_attempts})"
       return 0
     fi
 
-    # Method 2 — mariadb client
     if docker exec "${db_container}" mariadb -uroot -p"${root_password}" \
         -e "SELECT 1;" >/dev/null 2>&1; then
       log "✅ DB ready (mariadb client, attempt ${attempt}/${max_attempts})"
       return 0
     fi
 
-    # Method 3 — direct socket query (bypass network + auth quirks)
     if docker exec "${db_container}" bash -c \
         "echo 'SELECT 1;' | mariadb -uroot -p\"${root_password}\"" \
         >/dev/null 2>&1; then
@@ -157,7 +152,6 @@ auto_install_wordpress() {
 
   log "Checking if WordPress is already installed in ${cli_container}..."
 
-  # If WP is already installed, don't touch it
   if docker exec "${cli_container}" wp core is-installed --allow-root >/dev/null 2>&1; then
     log "WordPress already installed. Skipping auto-install."
     return 0
@@ -205,13 +199,10 @@ install_mu_plugins() {
 
   mkdir -p "${dst_dir}"
 
-  # Copy folder contents (keeps it simple; overwrites existing plugin files)
   rsync -a --delete "${src_dir}/" "${dst_dir}/"
 
-  # Ensure ownership matches the rest of the site (your requirement)
   chown -R www-data:www-data "${dst_dir}"
 
-  # Permissions: dirs 755, files 644 (only within mu-plugins)
   find "${dst_dir}" -type d -exec chmod 755 {} \;
   find "${dst_dir}" -type f -exec chmod 644 {} \;
 
@@ -226,25 +217,19 @@ get_version_info() {
   local db_container="$1"
   local cli_container="$2"
 
-  # Try mysql first, then mariadb
   RAW_DB_VERSION=$(
     docker exec "${db_container}" mysql --version 2>/dev/null ||
     docker exec "${db_container}" mariadb --version 2>/dev/null ||
     echo "unknown"
   )
 
-  # ------------------------------------------------------------
-  # Extract just "12.1.2-MariaDB" or "8.0.40" cleanly
-  # ------------------------------------------------------------
   if [[ "$RAW_DB_VERSION" == "unknown" ]]; then
     DB_VERSION_INFO="unknown"
   else
-    # Remove leading noise, keep version-like tokens
     DB_VERSION_INFO=$(echo "$RAW_DB_VERSION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-MariaDB)?')
     [[ -z "$DB_VERSION_INFO" ]] && DB_VERSION_INFO="$RAW_DB_VERSION"
   fi
 
-  # WordPress + PHP versions
   WP_CORE_VERSION=$(docker exec "${cli_container}" wp core version --allow-root 2>/dev/null || echo "unknown")
   PHP_VERSION_INFO=$(docker exec "${cli_container}" php -r 'echo phpversion();' 2>/dev/null || echo "unknown")
 
@@ -322,6 +307,10 @@ generate_json_summary() {
     "username": "${SITE_USER}",
     "home_directory": "${SITE_HOME}"
   },
+  "pressillion": {
+    "website_id": "${WEBSITE_ID}",
+    "ping_secret": "${PRESSILLION_PING_SECRET}"
+  },
   "domain": {
     "primary_domain": "${PRIMARY_DOMAIN}",
     "public_url": "${SITE_URL}",
@@ -382,11 +371,9 @@ if ! id -u "${SITE_USER}" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "${SITE_USER}"
   passwd -l "${SITE_USER}" || true
 else
-  # Ensure home exists even if user already present
   mkdir -p "${SITE_HOME}"
 fi
 
-# Group setup
 if ! getent group "${GROUP_ADMIN}" >/dev/null; then
   groupadd "${GROUP_ADMIN}"
 fi
@@ -400,7 +387,6 @@ mkdir -p "${DATA_DIR}/backup" "${DATA_DIR}/temp" "${DATA_DIR}/db" "${DATA_DIR}/s
 chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
 chmod -R 770 "${DATA_DIR}"
 
-# Copy template structure
 log "Syncing template data structure..."
 rsync -a "${TEMPLATE_ROOT}/data/" "${DATA_DIR}/"
 chown -R "${SITE_USER}:${GROUP_ADMIN}" "${DATA_DIR}"
@@ -434,13 +420,14 @@ MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
 DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
 
 WP_TITLE="${PRIMARY_DOMAIN}"
-# Use caller-provided admin username (or default 'admin' from earlier)
-# XKCD-style admin temp password
 WP_ADMIN_TEMP_PASS="$(generate_xkcd_password)"
 WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
 WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
-export WEBSITE_ID COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
+# ✅ Fix: generate and export Pressillion ping secret for envsubst -> .env
+PRESSILLION_PING_SECRET="$(openssl rand -hex 32)"
+
+export WEBSITE_ID PRESSILLION_PING_SECRET COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
        LETSENCRYPT_EMAIL CONTAINER_DB_NAME CONTAINER_SITE_NAME \
        CONTAINER_CLI_NAME MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD \
        MYSQL_ROOT_PASSWORD DB_LOCAL_PORT WP_TITLE WP_ADMIN_USER \
@@ -451,7 +438,6 @@ envsubst < "${ENV_TEMPLATE}" > "${ENV_TARGET}"
 chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${ENV_TARGET}"
 chmod 640 "${ENV_TARGET}"
 
-# Read actual image names/versions from the generated .env
 DB_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "DB_IMAGE")"
 DB_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "DB_VERSION")"
 SITE_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "SITE_IMAGE")"
@@ -501,30 +487,16 @@ if ! auto_install_wordpress "${CLI_CONTAINER}" "${SITE_URL}" "${WP_TITLE}" \
   exit 1
 fi
 
-################################################################################
-# INSTALL MU-PLUGINS (minimal scope, only mu-plugins folder perms)
-################################################################################
-
 install_mu_plugins "${SITE_USER}"
-
-################################################################################
-# COLLECT VERSION INFO
-################################################################################
 
 get_version_info "${DB_CONTAINER}" "${CLI_CONTAINER}"
 
-# Determine server IP for summary (best-effort)
 SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "SERVER-IP")"
-
-################################################################################
-# SUMMARY
-################################################################################
 
 log "Generating JSON summary..."
 generate_json_summary > "${SITE_ROOT}/site-summary.json"
 log "JSON summary written to ${SITE_ROOT}/site-summary.json"
 
-# Output JSON to STDOUT for Pressillion
 echo "::PRESSILION_JSON_START::"
 generate_json_summary
 echo "::PRESSILION_JSON_END::"
