@@ -8,21 +8,19 @@ SITE_USER=""
 OLD_HOST=""
 NEW_HOST=""
 WEBSITE_ID=""
-LETSENCRYPT_EMAIL=""
 
 usage() {
     cat <<EOF
 Usage:
-  change-domain.sh --site-root "/home/user-site-123" --site-user "user-site-123" --old "old.example.com" --new "example.com" --website-id "123" [--letsencrypt-email "me@example.com"]
+  change-domain.sh --site-root "/home/user-site-123" --site-user "user-site-123" --old "old.example.com" --new "example.com" --website-id "123"
 
 Workflow:
-  - Update .env (PRIMARY_DOMAIN, PRIMARY_URL, URL_WITHOUT_HTTP, DOMAINS, LETSENCRYPT_EMAIL)
+  - Update .env (PRIMARY_DOMAIN, PRIMARY_URL, URL_WITHOUT_HTTP, DOMAINS)
   - Restart docker (down/up)
   - Wait for DB (mariadb-admin ping, since mysql client may not exist in image)
   - wp-cli option updates + search-replace (all-tables, precise, recurse-objects)
-  - Restart proxy
+  - Restart proxy (/home/networkr/docker-proxy)
   - Restart docker again
-
 EOF
 }
 
@@ -33,7 +31,6 @@ while [[ $# -gt 0 ]]; do
         --old) OLD_HOST="${2:-}"; shift 2 ;;
         --new) NEW_HOST="${2:-}"; shift 2 ;;
         --website-id) WEBSITE_ID="${2:-}"; shift 2 ;;
-        --letsencrypt-email) LETSENCRYPT_EMAIL="${2:-}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 2 ;;
     esac
@@ -88,7 +85,7 @@ restart_site_docker() {
 }
 
 proxy_restart() {
-    local proxy_root="/home/networkr/networkr-companion/proxy"
+    local proxy_root="/home/networkr/docker-proxy"
     local proxy_compose="${proxy_root}/docker-compose.yml"
 
     log "Restarting proxy..."
@@ -100,16 +97,12 @@ proxy_restart() {
         docker compose up -d
         cd "${SITE_ROOT}"
         log "Proxy restarted via compose."
-
         return 0
 
     fi
 
-    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy$'; then docker restart nginx-proxy || true; fi
-    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-acme$'; then docker restart nginx-proxy-acme || true; fi
-    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-automation$'; then docker restart nginx-proxy-automation || true; fi
-
-    log "Proxy restart fallback complete."
+    log "ERROR: proxy compose not found at ${proxy_compose}"
+    return 1
 }
 
 wait_for_db() {
@@ -153,10 +146,6 @@ set_env_key "PRIMARY_DOMAIN" "${NEW_HOST}"
 set_env_key "PRIMARY_URL" "${PRIMARY_URL}"
 set_env_key "URL_WITHOUT_HTTP" "${NEW_HOST}"
 set_env_key "DOMAINS" "${DOMAINS}"
-
-if [[ -n "${LETSENCRYPT_EMAIL}" ]]; then
-    set_env_key "LETSENCRYPT_EMAIL" "${LETSENCRYPT_EMAIL}"
-fi
 
 log ".env updated:"
 log "  PRIMARY_DOMAIN=${NEW_HOST}"
