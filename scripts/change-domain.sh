@@ -15,9 +15,13 @@ usage() {
 Usage:
   change-domain.sh --site-root "/home/user-site-123" --site-user "user-site-123" --old "old.example.com" --new "example.com" --website-id "123" [--letsencrypt-email "me@example.com"]
 
-Notes:
-  - Expects docker compose project in SITE_ROOT
-  - Expects wp-cli container name available in .env or compose
+Workflow:
+  - Update .env (PRIMARY_DOMAIN, PRIMARY_URL, URL_WITHOUT_HTTP, DOMAINS, LETSENCRYPT_EMAIL)
+  - Restart docker (down/up)
+  - wp-cli option updates + search-replace (all-tables, precise, recurse-objects)
+  - Restart proxy
+  - Restart docker again
+
 EOF
 }
 
@@ -45,7 +49,9 @@ SITE_ROOT="$(echo "${SITE_ROOT}" | sed 's:/*$::')"
 OLD_HOST="$(echo "${OLD_HOST}" | tr '[:upper:]' '[:lower:]' | sed -E 's#^https?://##' | sed -E 's#/.*$##')"
 NEW_HOST="$(echo "${NEW_HOST}" | tr '[:upper:]' '[:lower:]' | sed -E 's#^https?://##' | sed -E 's#/.*$##')"
 
+ENV_FILE="${SITE_ROOT}/.env"
 PRIMARY_URL="https://${NEW_HOST}"
+DOMAINS="${NEW_HOST},www.${NEW_HOST}"
 
 log "Change domain start | website_id=${WEBSITE_ID} | site_user=${SITE_USER} | site_root=${SITE_ROOT}"
 log "Old host: ${OLD_HOST}"
@@ -56,45 +62,69 @@ if [[ ! -d "${SITE_ROOT}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${SITE_ROOT}/docker-compose.yml" && ! -f "${SITE_ROOT}/compose.yml" ]]; then
-    log "ERROR: docker compose file not found in ${SITE_ROOT}"
+if [[ ! -f "${ENV_FILE}" ]]; then
+    log "ERROR: missing .env at ${ENV_FILE}"
     exit 1
 fi
 
 cd "${SITE_ROOT}"
 
-if [[ ! -f "${SITE_ROOT}/.env" ]]; then
-    log "ERROR: missing .env at ${SITE_ROOT}/.env"
-    exit 1
-fi
+set_env_key() {
+    local key="$1"
+    local value="$2"
 
-set +u
-source "${SITE_ROOT}/.env"
-set -u
+    if grep -qE "^${key}=" "${ENV_FILE}"; then
+        perl -pi -e "s#^${key}=.*#${key}=${value}#g" "${ENV_FILE}"
+    else
+        echo "${key}=${value}" >> "${ENV_FILE}"
+    fi
+}
 
-CONTAINER_CLI_NAME="${CONTAINER_CLI_NAME:-}"
-CONTAINER_DB_NAME="${CONTAINER_DB_NAME:-}"
+restart_site_docker() {
+    log "Restarting site docker stack..."
+    docker compose down || true
+    docker compose up -d --build
+}
 
-if [[ -z "${CONTAINER_CLI_NAME}" ]]; then
-    log "ERROR: CONTAINER_CLI_NAME not set in .env"
-    exit 1
-fi
+proxy_restart() {
+    local proxy_root="/home/networkr/networkr-companion/proxy"
+    local proxy_compose="${proxy_root}/docker-compose.yml"
 
-log "Bringing containers up..."
-docker compose up -d --build
+    log "Restarting proxy..."
+
+    if [[ -f "${proxy_compose}" ]]; then
+
+        cd "${proxy_root}"
+        docker compose down || true
+        docker compose up -d
+        cd "${SITE_ROOT}"
+        log "Proxy restarted via compose."
+
+        return 0
+
+    fi
+
+    # Fallback to known container names (matches your prior Makefile behaviour)
+    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy$'; then docker restart nginx-proxy || true; fi
+    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-acme$'; then docker restart nginx-proxy-acme || true; fi
+    if docker ps --format '{{.Names}}' | grep -q '^nginx-proxy-automation$'; then docker restart nginx-proxy-automation || true; fi
+
+    log "Proxy restart fallback complete."
+}
 
 wait_for_db() {
-    local tries=30
+    local tries=90
     local i=1
 
-    if [[ -z "${CONTAINER_DB_NAME}" ]]; then
-        log "DB container name not set (CONTAINER_DB_NAME). Skipping explicit db check, will rely on wp-cli retries."
-        return 0
+    if [[ -z "${CONTAINER_DB_NAME:-}" ]]; then
+        log "ERROR: CONTAINER_DB_NAME not set in .env"
+        return 1
     fi
 
     while [[ $i -le $tries ]]; do
 
-        if docker exec "${CONTAINER_DB_NAME}" sh -c 'mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+        # Use an actual query. mysqladmin ping can be flaky depending on image/init timing.
+        if docker exec "${CONTAINER_DB_NAME}" sh -lc "mysql -uroot -p\"${MYSQL_ROOT_PASSWORD}\" -e 'SELECT 1' >/dev/null 2>&1"; then
             log "DB is responding."
             return 0
         fi
@@ -110,31 +140,58 @@ wait_for_db() {
 }
 
 wp() {
-    docker exec "${CONTAINER_CLI_NAME}" wp "$@"
+    if [[ -z "${CONTAINER_CLI_NAME:-}" ]]; then
+        log "ERROR: CONTAINER_CLI_NAME not set in .env"
+        exit 1
+    fi
+
+    docker exec "${CONTAINER_CLI_NAME}" wp --allow-root --path="/var/www/html" "$@"
 }
 
-log "Waiting for DB..."
+log "Step 1/5: Updating ${ENV_FILE} domain keys..."
+
+set_env_key "PRIMARY_DOMAIN" "${NEW_HOST}"
+set_env_key "PRIMARY_URL" "${PRIMARY_URL}"
+set_env_key "URL_WITHOUT_HTTP" "${NEW_HOST}"
+set_env_key "DOMAINS" "${DOMAINS}"
+
+if [[ -n "${LETSENCRYPT_EMAIL}" ]]; then
+    set_env_key "LETSENCRYPT_EMAIL" "${LETSENCRYPT_EMAIL}"
+fi
+
+log ".env updated:"
+log "  PRIMARY_DOMAIN=${NEW_HOST}"
+log "  PRIMARY_URL=${PRIMARY_URL}"
+log "  URL_WITHOUT_HTTP=${NEW_HOST}"
+log "  DOMAINS=${DOMAINS}"
+
+log "Loading updated .env into script environment..."
+set +u
+source "${ENV_FILE}"
+set -u
+
+log "Step 2/5: Restarting Docker so containers pick up env..."
+restart_site_docker
+
+log "Step 3/5: Waiting for DB..."
 wait_for_db
 
-log "Updating WP options..."
+log "Step 3/5: Updating WP options..."
 wp option update home "${PRIMARY_URL}"
 wp option update siteurl "${PRIMARY_URL}"
 
-log "Running WP search-replace passes (no permalinks changes)..."
-
-OLD_WWW="https://www.${OLD_HOST}"
-NEW_WWW="https://www.${NEW_HOST}"
-
-OLD_HTTPS="https://${OLD_HOST}"
-NEW_HTTPS="https://${NEW_HOST}"
-
-wp search-replace "${OLD_WWW}" "${NEW_WWW}" --all-tables --precise --recurse-objects --skip-columns=guid
-wp search-replace "${OLD_HTTPS}" "${NEW_HTTPS}" --all-tables --precise --recurse-objects --skip-columns=guid
+log "Step 3/5: Running search/replace (no permalinks changes)..."
+wp search-replace "https://www.${OLD_HOST}" "https://www.${NEW_HOST}" --all-tables --precise --recurse-objects --skip-columns=guid
+wp search-replace "http://www.${OLD_HOST}" "http://www.${NEW_HOST}" --all-tables --precise --recurse-objects --skip-columns=guid
+wp search-replace "https://${OLD_HOST}" "https://${NEW_HOST}" --all-tables --precise --recurse-objects --skip-columns=guid
+wp search-replace "http://${OLD_HOST}" "http://${NEW_HOST}" --all-tables --precise --recurse-objects --skip-columns=guid
 wp search-replace "${OLD_HOST}" "${NEW_HOST}" --all-tables --precise --recurse-objects --skip-columns=guid
 
-log "Restarting containers (to ensure env + app settle)..."
-docker compose down
-docker compose up -d --build
+log "Step 4/5: Restarting proxy..."
+proxy_restart
+
+log "Step 5/5: Final Docker restart..."
+restart_site_docker
 
 log "CHANGE_DOMAIN_COMPLETE | website_id=${WEBSITE_ID} | new=${NEW_HOST}"
 echo "CHANGE_DOMAIN_COMPLETE"
