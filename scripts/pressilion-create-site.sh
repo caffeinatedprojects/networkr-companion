@@ -8,6 +8,7 @@ GROUP_ADMIN="pressadmin"
 DELETE_SCRIPT="${NETWORKR_ROOT}/scripts/pressilion-delete-site.sh"
 
 WP_ADMIN_USER=""
+WP_SITE_TITLE=""
 
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
@@ -29,7 +30,8 @@ Usage:
     --domain DOMAIN \\
     --letsencrypt-email EMAIL \\
     [--wp-admin-email EMAIL] \\
-    [--wp-admin-user USER]
+    [--wp-admin-user USER] \\
+    [--wp-title TITLE]
 
 Creates a WordPress site using the Apache-based WordPress image.
 
@@ -272,6 +274,10 @@ while [[ $# -gt 0 ]]; do
       WP_ADMIN_USER="$2"
       shift 2
       ;;
+    --wp-title)
+      WP_SITE_TITLE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -420,11 +426,14 @@ MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)"
 DB_LOCAL_PORT=$((33060 + WEBSITE_ID))
 
 WP_TITLE="${PRIMARY_DOMAIN}"
+if [[ -n "${WP_SITE_TITLE}" ]]; then
+  WP_TITLE="${WP_SITE_TITLE}"
+fi
+
 WP_ADMIN_TEMP_PASS="$(generate_xkcd_password)"
 WP_ADMIN_MAIL="${WP_ADMIN_EMAIL}"
 WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
-# ✅ Fix: generate and export Pressillion ping secret for envsubst -> .env
 PRESSILLION_PING_SECRET="$(openssl rand -hex 32)"
 
 export WEBSITE_ID PRESSILLION_PING_SECRET COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
