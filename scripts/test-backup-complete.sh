@@ -1,83 +1,107 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 # Required env vars
 : "${PRESSILLION_API_SECRET:?Missing PRESSILLION_API_SECRET}"
 : "${PRESSILLION_SERVER_UID:?Missing PRESSILLION_SERVER_UID}"
 
-# Optional env vars
-PRESSILLION_BASE_URL="${PRESSILLION_BASE_URL:-https://pressillion-app.test}"
+# Optional env vars (stage default)
+PRESSILLION_BASE_URL="${PRESSILLION_BASE_URL:-https://stage.pressillion.co.uk}"
 PRESSILLION_ENDPOINT_PATH="${PRESSILLION_ENDPOINT_PATH:-/api/v1/backups/complete}"
 
-# These must match what your controller expects
+# Ensure leading slash (Laravel middleware expects "/".$request->path())
+case "$PRESSILLION_ENDPOINT_PATH" in
+  /*) : ;;
+  *) PRESSILLION_ENDPOINT_PATH="/$PRESSILLION_ENDPOINT_PATH" ;;
+esac
+
+# Payload defaults (override as needed)
 WEBSITE_ID="${WEBSITE_ID:-19}"
 WEBSITE_LINUX_USER="${WEBSITE_LINUX_USER:-kronankreative-19}"
-KIND="${KIND:-daily}"                         # daily|weekly|snapshot
-LABEL="${LABEL:-}"                            # optional, blank lets API set it
-STORAGE_DRIVER="${STORAGE_DRIVER:-s3}"        # optional, API defaults to s3 if empty
+KIND="${KIND:-daily}"                 # daily|weekly|snapshot
+LABEL="${LABEL:-}"                    # optional
+STORAGE_DRIVER="${STORAGE_DRIVER:-s3}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-pressillion-processing}"
-TEAM_ID="${TEAM_ID:-1}"                       # MUST match $server->team_id for object_key validation
-BYTES="${BYTES:-104857600}"                   # 100 MiB default
+TEAM_ID="${TEAM_ID:-1}"               # used in object_key
+BYTES="${BYTES:-104857600}"
 MANIFEST_SHA256="${MANIFEST_SHA256:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
 CHECKSUMS_SHA256="${CHECKSUMS_SHA256:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
 
-# Generate backup_at + stamp (UTC) so object_key matches your controller rules
-read -r BACKUP_AT STAMP <<<"$(python3 - <<'PY'
-from datetime import datetime, timezone
-dt = datetime.now(timezone.utc).replace(microsecond=0)
-print(dt.strftime("%Y-%m-%d %H:%M:%S"), dt.strftime("%Y%m%d-%H%M%S"))
-PY
-)"
-
-OBJECT_KEY="${KIND}/${TEAM_ID}/${WEBSITE_LINUX_USER}/backup_${STAMP}.tar.zst"
-
-# Build the JSON body (stable formatting, no extra whitespace)
-BODY="$(python3 - <<PY
-import json
-payload = {
-  "website_id": int("${WEBSITE_ID}"),
-  "website_linux_user": "${WEBSITE_LINUX_USER}",
-  "kind": "${KIND}",
-  "label": (None if "${LABEL}" == "" else "${LABEL}"),
-  "storage_driver": "${STORAGE_DRIVER}",
-  "storage_bucket": "${STORAGE_BUCKET}",
-  "object_key": "${OBJECT_KEY}",
-  "bytes": int("${BYTES}"),
-  "backup_at": "${BACKUP_AT}",
-  "manifest_sha256": "${MANIFEST_SHA256}",
-  "checksums_sha256": "${CHECKSUMS_SHA256}",
-}
-print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
-PY
-)"
-
 TS="$(date +%s)"
-NONCE="$(python3 - <<'PY'
-import uuid
-print(uuid.uuid4())
-PY
-)"
+export TS
 
-# Compute body sha + signature using python (no openssl/awk needed)
-read -r BODY_SHA SIG CANONICAL <<<"$(python3 - <<PY
-import hashlib, hmac
-secret = "${PRESSILLION_API_SECRET}".encode("utf-8")
-body = ${BODY!r}.encode("utf-8")
+PY_OUT="$(python3 - <<'PY'
+import os, json, uuid, hashlib, hmac
+from datetime import datetime, timezone
 
-body_sha = hashlib.sha256(body).hexdigest()
+ts = int(os.environ["TS"])
+secret = os.environ["PRESSILLION_API_SECRET"].encode("utf-8")
+
+endpoint_path = os.environ.get("PRESSILLION_ENDPOINT_PATH", "/api/v1/backups/complete")
+if not endpoint_path.startswith("/"):
+    endpoint_path = "/" + endpoint_path
+
+website_id = int(os.environ.get("WEBSITE_ID", "19"))
+linux_user = os.environ.get("WEBSITE_LINUX_USER", "kronankreative-19")
+kind = os.environ.get("KIND", "daily")
+label = os.environ.get("LABEL", "")
+storage_driver = os.environ.get("STORAGE_DRIVER", "s3")
+storage_bucket = os.environ.get("STORAGE_BUCKET", "pressillion-processing")
+team_id = os.environ.get("TEAM_ID", "1")
+bytes_ = int(os.environ.get("BYTES", "104857600"))
+manifest_sha = os.environ.get("MANIFEST_SHA256", "")
+checksums_sha = os.environ.get("CHECKSUMS_SHA256", "")
+
+dt = datetime.now(timezone.utc).replace(microsecond=0)
+backup_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+stamp = dt.strftime("%Y%m%d-%H%M%S")
+object_key = f"{kind}/{team_id}/{linux_user}/backup_{stamp}.tar.zst"
+
+payload = {
+  "website_id": website_id,
+  "website_linux_user": linux_user,
+  "kind": kind,
+  "label": (None if label == "" else label),
+  "storage_driver": storage_driver,
+  "storage_bucket": storage_bucket,
+  "object_key": object_key,
+  "bytes": bytes_,
+  "backup_at": backup_at,
+  "manifest_sha256": (None if manifest_sha == "" else manifest_sha),
+  "checksums_sha256": (None if checksums_sha == "" else checksums_sha),
+}
+
+# IMPORTANT: body must match what is sent byte-for-byte
+body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+nonce = str(uuid.uuid4())
 
 canonical = "\n".join([
-  str(int("${TS}")),
-  "${NONCE}",
+  str(ts),
+  nonce,
   "POST",
-  "${PRESSILLION_ENDPOINT_PATH}",
+  endpoint_path,
   body_sha,
 ])
 
 sig = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
-print(body_sha, sig, canonical.replace("\\n", "\\\\n"))
+
+print(body)
+print(body_sha)
+print(nonce)
+print(sig)
+print(backup_at)
+print(object_key)
 PY
 )"
+
+BODY="$(printf "%s" "$PY_OUT" | sed -n '1p')"
+BODY_SHA="$(printf "%s" "$PY_OUT" | sed -n '2p')"
+NONCE="$(printf "%s" "$PY_OUT" | sed -n '3p')"
+SIG="$(printf "%s" "$PY_OUT" | sed -n '4p')"
+BACKUP_AT="$(printf "%s" "$PY_OUT" | sed -n '5p')"
+OBJECT_KEY="$(printf "%s" "$PY_OUT" | sed -n '6p')"
 
 URL="${PRESSILLION_BASE_URL}${PRESSILLION_ENDPOINT_PATH}"
 
@@ -87,14 +111,16 @@ echo "TS:         ${TS}"
 echo "Nonce:      ${NONCE}"
 echo "Body SHA:   ${BODY_SHA}"
 echo "Signature:  ${SIG}"
+echo "Backup at:  ${BACKUP_AT}"
 echo "Object key: ${OBJECT_KEY}"
 echo ""
 
-curl -sk -D- "${URL}" \
+curl -sS -D- -X POST "${URL}" \
   -H "Content-Type: application/json" \
   -H "X-Pressillion-Server: ${PRESSILLION_SERVER_UID}" \
   -H "X-Pressillion-Timestamp: ${TS}" \
   -H "X-Pressillion-Nonce: ${NONCE}" \
   -H "X-Pressillion-Signature: ${SIG}" \
   --data "${BODY}"
+
 echo ""
