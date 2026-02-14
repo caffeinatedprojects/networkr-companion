@@ -10,6 +10,9 @@ DELETE_SCRIPT="${NETWORKR_ROOT}/scripts/pressilion-delete-site.sh"
 WP_ADMIN_USER=""
 WP_SITE_TITLE=""
 
+TEAM_ID=""
+DAILY_BACKUPS_ENABLED="1"
+
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
@@ -27,23 +30,15 @@ Usage:
   pressilion-create-site \\
     --user USERNAME \\
     --website-id ID \\
+    --team-id TEAM_ID \\
+    [--daily-backups-enabled 0|1] \\
     --domain DOMAIN \\
     --letsencrypt-email EMAIL \\
     [--wp-admin-email EMAIL] \\
     [--wp-admin-user USER] \\
     [--wp-title TITLE]
-
-Creates a WordPress site using the Apache-based WordPress image.
-
-Notes:
-  - DB image/version are taken from template/.env.template (e.g. mariadb:latest)
-  - WordPress image/version are taken from template/.env.template (e.g. wordpress:latest)
 EOF
 }
-
-################################################################################
-# XKCD-STYLE PASSWORD GENERATOR (for WP admin temp password only)
-################################################################################
 
 generate_xkcd_password() {
   local words=(
@@ -64,10 +59,6 @@ generate_xkcd_password() {
   echo "${w1}-${w2}-${w3}-${w4}-${num}"
 }
 
-################################################################################
-# SIMPLE .env PARSER (for image names/versions)
-################################################################################
-
 env_get_var() {
   local file="$1"
   local key="$2"
@@ -75,10 +66,6 @@ env_get_var() {
     grep -E "^${key}=" "$file" | tail -n1 | cut -d= -f2- || true
   fi
 }
-
-################################################################################
-# ROLLBACK / DELETE SITE HELPER
-################################################################################
 
 rollback_site() {
   local site_user="$1"
@@ -96,10 +83,6 @@ rollback_site() {
     log "⚠️ Delete script not found at ${DELETE_SCRIPT}, rollback skipped."
   fi
 }
-
-################################################################################
-# WAIT FOR DB TO BE READY (MySQL/MariaDB)
-################################################################################
 
 wait_for_db() {
   local db_container="$1"
@@ -140,10 +123,6 @@ wait_for_db() {
   return 1
 }
 
-################################################################################
-# AUTO-INSTALL WORDPRESS VIA WP-CLI
-################################################################################
-
 auto_install_wordpress() {
   local cli_container="$1"
   local site_url="$2"
@@ -176,10 +155,6 @@ auto_install_wordpress() {
   fi
 }
 
-################################################################################
-# COPY MU-PLUGINS INTO WP-CONTENT (post-install, minimal scope)
-################################################################################
-
 install_mu_plugins() {
   local site_user="$1"
 
@@ -211,10 +186,6 @@ install_mu_plugins() {
   log "✅ MU-plugins installed."
 }
 
-################################################################################
-# CAPTURE VERSIONS FOR SUMMARY
-################################################################################
-
 get_version_info() {
   local db_container="$1"
   local cli_container="$2"
@@ -238,10 +209,6 @@ get_version_info() {
   export DB_VERSION_INFO WP_CORE_VERSION PHP_VERSION_INFO
 }
 
-################################################################################
-# ARGUMENT PARSING
-################################################################################
-
 SITE_USER=""
 WEBSITE_ID=""
 PRIMARY_DOMAIN=""
@@ -256,6 +223,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --website-id)
       WEBSITE_ID="$2"
+      shift 2
+      ;;
+    --team-id)
+      TEAM_ID="$2"
+      shift 2
+      ;;
+    --daily-backups-enabled)
+      DAILY_BACKUPS_ENABLED="$2"
       shift 2
       ;;
     --domain)
@@ -289,9 +264,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]]; then
+if [[ -z "$SITE_USER" || -z "$WEBSITE_ID" || -z "$TEAM_ID" || -z "$PRIMARY_DOMAIN" || -z "$LETSENCRYPT_EMAIL" ]]; then
   echo "Missing required arguments."
   usage
+  exit 1
+fi
+
+if [[ "$DAILY_BACKUPS_ENABLED" != "0" && "$DAILY_BACKUPS_ENABLED" != "1" ]]; then
+  echo "Invalid --daily-backups-enabled (must be 0 or 1)"
   exit 1
 fi
 
@@ -362,10 +342,6 @@ generate_json_summary() {
 EOF
 }
 
-################################################################################
-# MAIN
-################################################################################
-
 require_root
 
 SITE_HOME="/home/${SITE_USER}"
@@ -403,10 +379,6 @@ cp -f "${TEMPLATE_ROOT}/conf.d/php.ini" "${SITE_ROOT}/conf.d/php.ini"
 chown -R "${SITE_USER}:${GROUP_ADMIN}" "${SITE_ROOT}/conf.d"
 chmod -R 770 "${SITE_ROOT}/conf.d"
 
-################################################################################
-# Generate .env
-################################################################################
-
 ENV_TEMPLATE="${TEMPLATE_ROOT}/.env.template"
 ENV_TARGET="${SITE_ROOT}/.env"
 
@@ -436,7 +408,7 @@ WP_PERMA_STRUCTURE='/%year%/%monthnum%/%postname%/'
 
 PRESSILLION_PING_SECRET="$(openssl rand -hex 32)"
 
-export WEBSITE_ID PRESSILLION_PING_SECRET COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
+export WEBSITE_ID TEAM_ID DAILY_BACKUPS_ENABLED PRESSILLION_PING_SECRET COMPOSE_PROJECT_NAME PRIMARY_DOMAIN DOMAINS \
        LETSENCRYPT_EMAIL CONTAINER_DB_NAME CONTAINER_SITE_NAME \
        CONTAINER_CLI_NAME MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD \
        MYSQL_ROOT_PASSWORD DB_LOCAL_PORT WP_TITLE WP_ADMIN_USER \
@@ -452,10 +424,6 @@ DB_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "DB_VERSION")"
 SITE_IMAGE_NAME="$(env_get_var "${ENV_TARGET}" "SITE_IMAGE")"
 SITE_IMAGE_VERSION="$(env_get_var "${ENV_TARGET}" "SITE_VERSION")"
 
-################################################################################
-# docker-compose.yml
-################################################################################
-
 COMPOSE_TEMPLATE="${TEMPLATE_ROOT}/docker-compose.yml"
 COMPOSE_TARGET="${SITE_ROOT}/docker-compose.yml"
 
@@ -463,10 +431,6 @@ log "Copying docker-compose.yml..."
 cp -f "${COMPOSE_TEMPLATE}" "${COMPOSE_TARGET}"
 chown "${PRESSILION_USER}:${GROUP_ADMIN}" "${COMPOSE_TARGET}"
 chmod 640 "${COMPOSE_TARGET}"
-
-################################################################################
-# START STACK
-################################################################################
 
 log "Bringing up the Docker stack..."
 cd "${SITE_ROOT}"
@@ -476,10 +440,6 @@ if ! docker compose up -d --build; then
   rollback_site "${SITE_USER}"
   exit 1
 fi
-
-################################################################################
-# WAIT FOR DB, THEN AUTO-INSTALL WORDPRESS
-################################################################################
 
 DB_CONTAINER="${CONTAINER_DB_NAME}"
 CLI_CONTAINER="${CONTAINER_CLI_NAME}"
