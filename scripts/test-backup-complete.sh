@@ -10,17 +10,15 @@ set -eu
 PRESSILLION_BASE_URL="${PRESSILLION_BASE_URL:-https://stage.pressillion.co.uk}"
 PRESSILLION_ENDPOINT_PATH="${PRESSILLION_ENDPOINT_PATH:-/api/v1/backups/complete}"
 
-# Ensure leading slash (Laravel middleware expects "/".$request->path())
 case "$PRESSILLION_ENDPOINT_PATH" in
   /*) : ;;
   *) PRESSILLION_ENDPOINT_PATH="/$PRESSILLION_ENDPOINT_PATH" ;;
 esac
 
-# Payload defaults (override as needed)
 WEBSITE_ID="${WEBSITE_ID:-20}"
 WEBSITE_LINUX_USER="${WEBSITE_LINUX_USER:-kronankreative-20}"
-KIND="${KIND:-daily}"                 # daily|weekly|snapshot
-LABEL="${LABEL:-}"                    # optional
+KIND="${KIND:-daily}"
+LABEL="${LABEL:-}"
 STORAGE_DRIVER="${STORAGE_DRIVER:-s3}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-pressillion-processing}"
 BYTES="${BYTES:-104857600}"
@@ -68,7 +66,6 @@ payload = {
   "backup_at": backup_at,
 }
 
-# Only include optional fields if set (avoids null noise + future signature surprises)
 if label != "":
   payload["label"] = label
 if manifest_sha != "":
@@ -76,7 +73,6 @@ if manifest_sha != "":
 if checksums_sha != "":
   payload["checksums_sha256"] = checksums_sha
 
-# IMPORTANT: body must match what is sent byte-for-byte
 body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
 
@@ -121,6 +117,7 @@ echo "Object key: ${OBJECT_KEY}"
 echo ""
 
 curl -sS -D- -X POST "${URL}" \
+  -H "Accept: application/json" \
   -H "Content-Type: application/json" \
   -H "X-Pressillion-Server: ${PRESSILLION_SERVER_UID}" \
   -H "X-Pressillion-Timestamp: ${TS}" \
