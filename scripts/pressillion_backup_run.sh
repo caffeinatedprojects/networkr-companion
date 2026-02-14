@@ -1,24 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------
-# Required:
-#   --linux-user
-#
-# Optional:
-#   --env-file (defaults to /home/<linux-user>/.env)
-#
-# Uses existing env vars inside site env:
-#   WEBSITE_ID
-#   TEAM_ID
-#   DAILY_BACKUPS_ENABLED
-#
-# No new identity variables.
-# ------------------------------------------------------------------
-
 BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"   # no https (kept for future use; not required today)
 BUCKET="${BUCKET:-caffeinated-media}"
 SPACES_ENDPOINT="${SPACES_ENDPOINT:-https://ams3.digitaloceanspaces.com}"
+AWS_RUN_AS_USER="${AWS_RUN_AS_USER:-networkr}"
 
 LINUX_USER=""
 ENV_FILE=""
@@ -59,6 +45,32 @@ file_size_bytes() {
   wc -c < "$f" | tr -d ' '
 }
 
+aws_cp() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Dry-run enabled: upload skipped"
+    return 0
+  fi
+
+  # If running as root, use networkr's AWS config/creds (most likely where they are)
+  if [[ "$(id -u)" -eq 0 ]]; then
+    if ! id -u "$AWS_RUN_AS_USER" >/dev/null 2>&1; then
+      echo "AWS run-as user missing: ${AWS_RUN_AS_USER}"
+      exit 1
+    fi
+
+    # Ensure root can read the archive, and the target user can too
+    chmod 0644 "$src"
+
+    sudo -u "$AWS_RUN_AS_USER" -H aws s3 cp "$src" "$dst" --endpoint-url "$SPACES_ENDPOINT"
+    return $?
+  fi
+
+  aws s3 cp "$src" "$dst" --endpoint-url "$SPACES_ENDPOINT"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --linux-user) LINUX_USER="${2:-}"; shift 2 ;;
@@ -77,7 +89,6 @@ if [[ -z "${LINUX_USER}" ]]; then
   exit 1
 fi
 
-# Default env-file if not supplied
 if [[ -z "${ENV_FILE}" ]]; then
   ENV_FILE="/home/${LINUX_USER}/.env"
 fi
@@ -92,7 +103,7 @@ if [[ ! -d "/home/${LINUX_USER}" ]]; then
   exit 1
 fi
 
-# Load site env (expects a simple KEY=VALUE file)
+# Load site env
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -130,24 +141,26 @@ fi
 log "Creating archive: $ARCHIVE"
 log "Source: /home/${LINUX_USER} (data, docker-compose.yml, .env if present)"
 
-# Create archive.
-# - include .env only if present
 TAR_ITEMS=( "data" "docker-compose.yml" )
 if [[ -f "/home/${LINUX_USER}/.env" ]]; then
   TAR_ITEMS+=( ".env" )
 fi
 
-set +e
-tar -czf "$ARCHIVE" -C "/home/${LINUX_USER}" "${TAR_ITEMS[@]}"
-TAR_RC=$?
-set -e
+tar -czf "$ARCHIVE" \
+  --warning=no-file-changed \
+  --ignore-failed-read \
+  -C "/home/${LINUX_USER}" "${TAR_ITEMS[@]}"
 
-if [[ "$TAR_RC" -ne 0 ]]; then
-  echo "tar failed (exit ${TAR_RC})"
+if [[ ! -f "$ARCHIVE" ]]; then
+  echo "Archive was not created: $ARCHIVE"
   exit 1
 fi
 
 SIZE="$(file_size_bytes "$ARCHIVE")"
+if [[ "$SIZE" -lt 1024 ]]; then
+  echo "Archive looks too small (${SIZE} bytes) - refusing to upload"
+  exit 1
+fi
 
 log "Uploading to Spaces:"
 log "  endpoint: ${SPACES_ENDPOINT}"
@@ -155,13 +168,7 @@ log "  bucket:   s3://${BUCKET}"
 log "  object:   ${OBJECT_KEY}"
 log "  bytes:    ${SIZE}"
 
-if [[ "$DRY_RUN" -eq 0 ]]; then
-  aws s3 cp "$ARCHIVE" \
-    "s3://${BUCKET}/${OBJECT_KEY}" \
-    --endpoint-url "$SPACES_ENDPOINT"
-else
-  log "Dry-run enabled: upload skipped"
-fi
+aws_cp "$ARCHIVE" "s3://${BUCKET}/${OBJECT_KEY}"
 
 if [[ "$KEEP_LOCAL" -ne 1 ]]; then
   rm -rf "$WORKDIR"
