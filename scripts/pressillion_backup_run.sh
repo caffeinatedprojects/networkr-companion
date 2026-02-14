@@ -1,28 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------
-# Pressillion WordPress backup runner
-#
-# Creates a portable WP backup:
-#   - DB export (mysqldump/mariadb-dump) -> db.sql.gz
-#   - wp-content directory (and optionally wp-config.php, .htaccess)
-#
-# Uploads to Spaces and notifies Pressillion API (/api/v1/backups/complete).
-#
-# Required:
-#   --linux-user <linux-user>
-#
-# Optional:
-#   --env-file /home/<linux-user>/.env
-#   --snapshot
-#   --dry-run
-#   --keep-local
-#   --force            (ignores DAILY_BACKUPS_ENABLED=0)
-# ------------------------------------------------------------------
-
 BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"               # no https
-ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"    # API path
+ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"
 BUCKET="${BUCKET:-caffeinated-media}"
 SPACES_ENDPOINT="${SPACES_ENDPOINT:-https://ams3.digitaloceanspaces.com}"
 AWS_RUN_AS_USER="${AWS_RUN_AS_USER:-networkr}"
@@ -75,7 +55,6 @@ aws_cp() {
     return 0
   fi
 
-  # Running as root usually loses AWS creds; use networkr's profile/config.
   if [[ "$(id -u)" -eq 0 ]]; then
     if ! id -u "$AWS_RUN_AS_USER" >/dev/null 2>&1; then
       echo "AWS run-as user missing: ${AWS_RUN_AS_USER}"
@@ -91,12 +70,11 @@ aws_cp() {
 }
 
 notify_app() {
-  local kind="$1"
-  local object_key="$2"
+  local api_kind="$1"        # daily|weekly|snapshot
+  local api_object_key="$2"  # must match Laravel validation
   local bytes="$3"
   local backup_at="$4"
 
-  # If missing, we cannot record in DB.
   if [[ -z "${SERVER_UID:-}" || -z "${API_SECRET:-}" ]]; then
     echo "Missing SERVER_UID or API_SECRET in host env (needed to notify app)."
     echo "Example:"
@@ -107,13 +85,11 @@ notify_app() {
 
   local url="https://${BASE_HOST}${ENDPOINT_PATH}"
 
-  # Generate signed request via python (keeps canonical exactly consistent)
   local py_out
   py_out="$(python3 - <<'PY'
 import os, json, uuid, hashlib, hmac
 from datetime import datetime, timezone
 
-server_uid = os.environ["SERVER_UID"]
 api_secret = os.environ["API_SECRET"].encode("utf-8")
 endpoint_path = os.environ.get("ENDPOINT_PATH", "/api/v1/backups/complete")
 if not endpoint_path.startswith("/"):
@@ -121,11 +97,11 @@ if not endpoint_path.startswith("/"):
 
 website_id = int(os.environ["WEBSITE_ID"])
 linux_user = os.environ["LINUX_USER"]
-team_id = os.environ["TEAM_ID"]
-kind = os.environ["KIND"]
-object_key = os.environ["OBJECT_KEY"]
+kind = os.environ["API_KIND"]
+object_key = os.environ["API_OBJECT_KEY"]
 bytes_ = int(os.environ["BYTES"])
 backup_at = os.environ["BACKUP_AT"]
+bucket = os.environ["BUCKET"]
 
 ts = int(datetime.now(timezone.utc).timestamp())
 nonce = str(uuid.uuid4())
@@ -135,7 +111,7 @@ payload = {
   "website_linux_user": linux_user,
   "kind": kind,
   "storage_driver": "s3",
-  "storage_bucket": os.environ.get("BUCKET", ""),
+  "storage_bucket": bucket,
   "object_key": object_key,
   "bytes": bytes_,
   "backup_at": backup_at,
@@ -169,16 +145,15 @@ PY
 
   log "Notifying app (records backup in DB)..."
   log "  url:   ${url}"
-  log "  kind:  ${kind}"
+  log "  kind:  ${api_kind}"
   log "  bytes: ${bytes}"
-  log "  key:   ${object_key}"
+  log "  key:   ${api_object_key}"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "Dry-run enabled: notify skipped"
     return 0
   fi
 
-  # Show status+headers, and JSON body at end
   curl -sS -D- -X POST "${url}" \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
@@ -224,13 +199,11 @@ if [[ ! -d "/home/${LINUX_USER}" ]]; then
   exit 1
 fi
 
-# Load site env
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
 
-# Required site env vars
 : "${WEBSITE_ID:?WEBSITE_ID missing in env}"
 : "${TEAM_ID:?TEAM_ID missing in env}"
 : "${CONTAINER_DB_NAME:?CONTAINER_DB_NAME missing in env}"
@@ -243,8 +216,7 @@ if [[ "$DO_SNAPSHOT" -eq 0 && "${DAILY_BACKUPS_ENABLED:-0}" != "1" && "$FORCE" -
 fi
 
 STAMP="$(date -u '+%Y%m%d-%H%M%S')"
-HUMAN_TS="$(date -u '+%Y-%m-%d %H:%M:%S')"
-BACKUP_AT_UTC="${HUMAN_TS}"
+BACKUP_AT_UTC="$(date -u '+%Y-%m-%d %H:%M:%S')"
 
 WORKDIR="/tmp/pressillion-${LINUX_USER}-${STAMP}"
 OUTDIR="${WORKDIR}/payload"
@@ -252,22 +224,30 @@ ARCHIVE="${WORKDIR}/backup-${STAMP}.tar.gz"
 
 mkdir -p "$OUTDIR"
 
-# Determine object key
+# Upload location in Spaces (your desired "app/stage host prefix")
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
-  KIND="snapshot"
-  OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
+  S3_OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
 else
-  KIND="daily"
-  OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
+  S3_OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
 fi
 
-# Export DB
+# API object key (MUST match Laravel validation prefix)
+# Enforced by controller:
+#   prefix: {kind}/{team_id}/{linux_user}/
+#   file:   backup_{YYYYMMDD-HHMMSS}.tar.zst
+if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
+  API_KIND="snapshot"
+else
+  API_KIND="daily"
+fi
+API_OBJECT_KEY="${API_KIND}/${TEAM_ID}/${LINUX_USER}/backup_${STAMP}.tar.zst"
+
 log "Exporting DB from container: ${CONTAINER_DB_NAME}"
 log "  database: ${MYSQL_DATABASE}"
+
 DB_DUMP="${OUTDIR}/db.sql"
 DB_GZ="${OUTDIR}/db.sql.gz"
 
-# Try mysqldump first, then mariadb-dump
 if docker exec "${CONTAINER_DB_NAME}" sh -lc "command -v mysqldump >/dev/null 2>&1"; then
   docker exec "${CONTAINER_DB_NAME}" sh -lc \
     "mysqldump -uroot -p\"${MYSQL_ROOT_PASSWORD}\" --single-transaction --quick --routines --triggers \"${MYSQL_DATABASE}\"" \
@@ -279,30 +259,20 @@ else
 fi
 
 gzip -9 "${DB_DUMP}"
-if [[ ! -f "${DB_GZ}" ]]; then
-  echo "DB dump failed: ${DB_GZ} not created"
-  exit 1
-fi
 
-# Collect WP files (portable restore set)
 SITE_DIR="/home/${LINUX_USER}/data/site"
 WP_CONTENT="${SITE_DIR}/wp-content"
 WP_CONFIG="${SITE_DIR}/wp-config.php"
 HTACCESS="${SITE_DIR}/.htaccess"
 
-if [[ ! -d "${SITE_DIR}" ]]; then
-  echo "Missing site dir: ${SITE_DIR}"
-  exit 1
-fi
-
-if [[ -d "${WP_CONTENT}" ]]; then
-  log "Copying wp-content..."
-  mkdir -p "${OUTDIR}/wp-content"
-  rsync -a --delete "${WP_CONTENT}/" "${OUTDIR}/wp-content/"
-else
+if [[ ! -d "${WP_CONTENT}" ]]; then
   echo "Missing wp-content folder: ${WP_CONTENT}"
   exit 1
 fi
+
+log "Copying wp-content..."
+mkdir -p "${OUTDIR}/wp-content"
+rsync -a --delete "${WP_CONTENT}/" "${OUTDIR}/wp-content/"
 
 if [[ -f "${WP_CONFIG}" ]]; then
   log "Including wp-config.php"
@@ -314,34 +284,22 @@ if [[ -f "${HTACCESS}" ]]; then
   cp -f "${HTACCESS}" "${OUTDIR}/.htaccess"
 fi
 
-# Add a tiny manifest for sanity
 cat > "${OUTDIR}/manifest.json" <<EOF
 {
   "created_at_utc": "${BACKUP_AT_UTC}",
-  "kind": "${KIND}",
+  "kind": "${API_KIND}",
   "website_id": ${WEBSITE_ID},
   "team_id": ${TEAM_ID},
   "linux_user": "${LINUX_USER}",
-  "base_host": "${BASE_HOST}",
-  "object_key": "${OBJECT_KEY}",
-  "contains": [
-    "db.sql.gz",
-    "wp-content/",
-    "wp-config.php (if present)",
-    ".htaccess (if present)",
-    "manifest.json"
-  ]
+  "spaces_bucket": "${BUCKET}",
+  "spaces_object_key": "${S3_OBJECT_KEY}",
+  "api_object_key": "${API_OBJECT_KEY}",
+  "contains": ["db.sql.gz","wp-content/","wp-config.php (if present)",".htaccess (if present)","manifest.json"]
 }
 EOF
 
-# Create archive
 log "Creating archive: ${ARCHIVE}"
 tar -czf "${ARCHIVE}" -C "${OUTDIR}" .
-
-if [[ ! -f "${ARCHIVE}" ]]; then
-  echo "Archive was not created: ${ARCHIVE}"
-  exit 1
-fi
 
 SIZE="$(file_size_bytes "${ARCHIVE}")"
 if [[ "$SIZE" -lt 10240 ]]; then
@@ -352,17 +310,14 @@ fi
 log "Uploading to Spaces:"
 log "  endpoint: ${SPACES_ENDPOINT}"
 log "  bucket:   s3://${BUCKET}"
-log "  object:   ${OBJECT_KEY}"
+log "  object:   ${S3_OBJECT_KEY}"
 log "  bytes:    ${SIZE}"
 
-aws_cp "${ARCHIVE}" "s3://${BUCKET}/${OBJECT_KEY}"
+aws_cp "${ARCHIVE}" "s3://${BUCKET}/${S3_OBJECT_KEY}"
 
-# Notify app to record in DB
-# Export vars needed by notify_app's python block
-export WEBSITE_ID TEAM_ID LINUX_USER KIND OBJECT_KEY BYTES="${SIZE}" BACKUP_AT="${BACKUP_AT_UTC}" \
-       BASE_HOST ENDPOINT_PATH BUCKET
+export WEBSITE_ID TEAM_ID LINUX_USER BUCKET ENDPOINT_PATH API_KIND API_OBJECT_KEY BYTES="${SIZE}" BACKUP_AT="${BACKUP_AT_UTC}"
 
-notify_app "${KIND}" "${OBJECT_KEY}" "${SIZE}" "${BACKUP_AT_UTC}" || true
+notify_app "${API_KIND}" "${API_OBJECT_KEY}" "${SIZE}" "${BACKUP_AT_UTC}" || true
 
 if [[ "$KEEP_LOCAL" -ne 1 ]]; then
   rm -rf "$WORKDIR"
@@ -372,10 +327,11 @@ fi
 
 echo ""
 log "Backup complete"
-echo "Timestamp:  ${HUMAN_TS} (UTC)"
-echo "Kind:       ${KIND}"
-echo "Website ID: ${WEBSITE_ID}"
-echo "Team ID:    ${TEAM_ID}"
-echo "Linux User: ${LINUX_USER}"
-echo "Size:       ${SIZE} bytes"
-echo "Path:       ${OBJECT_KEY}"
+echo "Timestamp:        ${BACKUP_AT_UTC} (UTC)"
+echo "Kind:             ${API_KIND}"
+echo "Website ID:       ${WEBSITE_ID}"
+echo "Team ID:          ${TEAM_ID}"
+echo "Linux User:       ${LINUX_USER}"
+echo "Size:             ${SIZE} bytes"
+echo "Spaces object:    ${S3_OBJECT_KEY}"
+echo "API object key:   ${API_OBJECT_KEY}"
