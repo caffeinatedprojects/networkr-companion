@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"   # no https
+# ------------------------------------------------------------------
+# Pressillion WordPress backup runner
+#
+# Creates a portable WP backup:
+#   - DB export (mysqldump/mariadb-dump) -> db.sql.gz
+#   - wp-content directory (and optionally wp-config.php, .htaccess)
+#
+# Uploads to Spaces and notifies Pressillion API (/api/v1/backups/complete).
+#
+# Required:
+#   --linux-user <linux-user>
+#
+# Optional:
+#   --env-file /home/<linux-user>/.env
+#   --snapshot
+#   --dry-run
+#   --keep-local
+#   --force            (ignores DAILY_BACKUPS_ENABLED=0)
+# ------------------------------------------------------------------
+
+BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"               # no https
+ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"    # API path
 BUCKET="${BUCKET:-caffeinated-media}"
 SPACES_ENDPOINT="${SPACES_ENDPOINT:-https://ams3.digitaloceanspaces.com}"
 AWS_RUN_AS_USER="${AWS_RUN_AS_USER:-networkr}"
-
-# API notify (host env)
-SERVER_UID="${SERVER_UID:-}"
-API_SECRET="${API_SECRET:-}"
-ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"
 
 LINUX_USER=""
 ENV_FILE=""
@@ -22,16 +38,13 @@ usage() {
   echo "Usage:"
   echo "  $0 --linux-user <linux-user> [--env-file /home/<linux-user>/.env] [--snapshot] [--dry-run] [--keep-local] [--force]"
   echo ""
-  echo "Options:"
-  echo "  --linux-user    Linux user that owns the site (required)"
-  echo "  --env-file      Path to site .env (defaults to /home/<linux-user>/.env)"
-  echo "  --snapshot      Create snapshot (runs even if daily backups disabled)"
-  echo "  --dry-run       Build archive but do not upload / notify"
-  echo "  --keep-local    Do not delete local archive after upload"
-  echo "  --force         Ignore DAILY_BACKUPS_ENABLED flag"
+  echo "Host env (for API notify / DB record):"
+  echo "  SERVER_UID   (Servers.uid)"
+  echo "  API_SECRET   (Servers.api_secret)"
   echo ""
-  echo "Host env (for notify):"
-  echo "  SERVER_UID and API_SECRET (servers.api_secret) are required to notify the app"
+  echo "Examples:"
+  echo "  sudo BASE_HOST=\"stage.pressillion.co.uk\" SERVER_UID=\"551676231\" API_SECRET=\"<secret>\" \\"
+  echo "    bash $0 --linux-user example-21"
 }
 
 log() {
@@ -62,7 +75,7 @@ aws_cp() {
     return 0
   fi
 
-  # If running as root, use networkr's AWS config/creds (where Spaces creds likely are)
+  # Running as root usually loses AWS creds; use networkr's profile/config.
   if [[ "$(id -u)" -eq 0 ]]; then
     if ! id -u "$AWS_RUN_AS_USER" >/dev/null 2>&1; then
       echo "AWS run-as user missing: ${AWS_RUN_AS_USER}"
@@ -77,72 +90,52 @@ aws_cp() {
   aws s3 cp "$src" "$dst" --endpoint-url "$SPACES_ENDPOINT"
 }
 
-ensure_leading_slash() {
-  local p="$1"
-  if [[ "${p}" == /* ]]; then
-    echo "$p"
-  else
-    echo "/$p"
-  fi
-}
-
 notify_app() {
-  local kind="$1"         # daily|weekly|snapshot
+  local kind="$1"
   local object_key="$2"
   local bytes="$3"
-  local backup_at="$4"    # "YYYY-mm-dd HH:MM:SS"
+  local backup_at="$4"
 
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "Dry-run enabled: notify skipped"
-    return 0
-  fi
-
-  if [[ -z "$SERVER_UID" || -z "$API_SECRET" ]]; then
+  # If missing, we cannot record in DB.
+  if [[ -z "${SERVER_UID:-}" || -z "${API_SECRET:-}" ]]; then
     echo "Missing SERVER_UID or API_SECRET in host env (needed to notify app)."
     echo "Example:"
-    echo "  export SERVER_UID=\"551676231\""
-    echo "  export API_SECRET=\"<servers.api_secret>\""
-    return 1
+    echo "  sudo SERVER_UID=\"551676231\" API_SECRET=\"<servers.api_secret>\" \\"
+    echo "    bash $0 --linux-user ${LINUX_USER}"
+    return 2
   fi
 
-  local endpoint_path
-  endpoint_path="$(ensure_leading_slash "$ENDPOINT_PATH")"
+  local url="https://${BASE_HOST}${ENDPOINT_PATH}"
 
-  local base_url="https://${BASE_HOST}"
-  local url="${base_url}${endpoint_path}"
-
-  TS="$(date +%s)"
-  export TS
-
-  log "Notifying app: ${url}"
-
-  # Build + sign exactly like the working test script
-  PY_OUT="$(python3 - <<'PY'
+  # Generate signed request via python (keeps canonical exactly consistent)
+  local py_out
+  py_out="$(python3 - <<'PY'
 import os, json, uuid, hashlib, hmac
 from datetime import datetime, timezone
 
-ts = int(os.environ["TS"])
-secret = os.environ["API_SECRET"].encode("utf-8")
-
+server_uid = os.environ["SERVER_UID"]
+api_secret = os.environ["API_SECRET"].encode("utf-8")
 endpoint_path = os.environ.get("ENDPOINT_PATH", "/api/v1/backups/complete")
 if not endpoint_path.startswith("/"):
     endpoint_path = "/" + endpoint_path
 
 website_id = int(os.environ["WEBSITE_ID"])
 linux_user = os.environ["LINUX_USER"]
+team_id = os.environ["TEAM_ID"]
 kind = os.environ["KIND"]
-storage_driver = "s3"
-storage_bucket = os.environ["BUCKET"]
 object_key = os.environ["OBJECT_KEY"]
 bytes_ = int(os.environ["BYTES"])
 backup_at = os.environ["BACKUP_AT"]
+
+ts = int(datetime.now(timezone.utc).timestamp())
+nonce = str(uuid.uuid4())
 
 payload = {
   "website_id": website_id,
   "website_linux_user": linux_user,
   "kind": kind,
-  "storage_driver": storage_driver,
-  "storage_bucket": storage_bucket,
+  "storage_driver": "s3",
+  "storage_bucket": os.environ.get("BUCKET", ""),
   "object_key": object_key,
   "bytes": bytes_,
   "backup_at": backup_at,
@@ -150,8 +143,6 @@ payload = {
 
 body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-nonce = str(uuid.uuid4())
 
 canonical = "\n".join([
   str(ts),
@@ -161,37 +152,44 @@ canonical = "\n".join([
   body_sha,
 ])
 
-sig = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+sig = hmac.new(api_secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
-print(body)
-print(body_sha)
+print(ts)
 print(nonce)
 print(sig)
+print(body)
 PY
 )"
 
-  BODY="$(printf "%s" "$PY_OUT" | sed -n '1p')"
-  BODY_SHA="$(printf "%s" "$PY_OUT" | sed -n '2p')"
-  NONCE="$(printf "%s" "$PY_OUT" | sed -n '3p')"
-  SIG="$(printf "%s" "$PY_OUT" | sed -n '4p')"
+  local ts nonce sig body
+  ts="$(printf "%s" "$py_out" | sed -n '1p')"
+  nonce="$(printf "%s" "$py_out" | sed -n '2p')"
+  sig="$(printf "%s" "$py_out" | sed -n '3p')"
+  body="$(printf "%s" "$py_out" | sed -n '4p')"
 
-  log "Notify headers: ts=${TS} nonce=${NONCE} body_sha=${BODY_SHA}"
+  log "Notifying app (records backup in DB)..."
+  log "  url:   ${url}"
+  log "  kind:  ${kind}"
+  log "  bytes: ${bytes}"
+  log "  key:   ${object_key}"
 
-  curl -sS -D /tmp/pressillion-notify-headers.txt -o /tmp/pressillion-notify-body.txt \
-    -X POST "${url}" \
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Dry-run enabled: notify skipped"
+    return 0
+  fi
+
+  # Show status+headers, and JSON body at end
+  curl -sS -D- -X POST "${url}" \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
     -H "X-Pressillion-Server: ${SERVER_UID}" \
-    -H "X-Pressillion-Timestamp: ${TS}" \
-    -H "X-Pressillion-Nonce: ${NONCE}" \
-    -H "X-Pressillion-Signature: ${SIG}" \
-    --data "${BODY}"
+    -H "X-Pressillion-Timestamp: ${ts}" \
+    -H "X-Pressillion-Nonce: ${nonce}" \
+    -H "X-Pressillion-Signature: ${sig}" \
+    --data "${body}"
 
-  HTTP_LINE="$(head -n1 /tmp/pressillion-notify-headers.txt || true)"
-  log "Notify response: ${HTTP_LINE}"
-
-  cat /tmp/pressillion-notify-body.txt
   echo ""
+  return 0
 }
 
 while [[ $# -gt 0 ]]; do
@@ -232,15 +230,12 @@ set -a
 source "$ENV_FILE"
 set +a
 
-if [[ -z "${WEBSITE_ID:-}" ]]; then
-  echo "WEBSITE_ID missing in env: $ENV_FILE"
-  exit 1
-fi
-
-if [[ -z "${TEAM_ID:-}" ]]; then
-  echo "TEAM_ID missing in env: $ENV_FILE"
-  exit 1
-fi
+# Required site env vars
+: "${WEBSITE_ID:?WEBSITE_ID missing in env}"
+: "${TEAM_ID:?TEAM_ID missing in env}"
+: "${CONTAINER_DB_NAME:?CONTAINER_DB_NAME missing in env}"
+: "${MYSQL_DATABASE:?MYSQL_DATABASE missing in env}"
+: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD missing in env}"
 
 if [[ "$DO_SNAPSHOT" -eq 0 && "${DAILY_BACKUPS_ENABLED:-0}" != "1" && "$FORCE" -ne 1 ]]; then
   log "Daily backups disabled (DAILY_BACKUPS_ENABLED=${DAILY_BACKUPS_ENABLED:-0}). Use --force to override."
@@ -249,13 +244,15 @@ fi
 
 STAMP="$(date -u '+%Y%m%d-%H%M%S')"
 HUMAN_TS="$(date -u '+%Y-%m-%d %H:%M:%S')"
-BACKUP_AT="${HUMAN_TS}"
+BACKUP_AT_UTC="${HUMAN_TS}"
 
 WORKDIR="/tmp/pressillion-${LINUX_USER}-${STAMP}"
-ARCHIVE="${WORKDIR}/archive.tar.gz"
+OUTDIR="${WORKDIR}/payload"
+ARCHIVE="${WORKDIR}/backup-${STAMP}.tar.gz"
 
-mkdir -p "$WORKDIR"
+mkdir -p "$OUTDIR"
 
+# Determine object key
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
   KIND="snapshot"
   OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
@@ -264,26 +261,90 @@ else
   OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
 fi
 
-log "Creating archive: $ARCHIVE"
-log "Source: /home/${LINUX_USER} (data, docker-compose.yml, .env if present)"
+# Export DB
+log "Exporting DB from container: ${CONTAINER_DB_NAME}"
+log "  database: ${MYSQL_DATABASE}"
+DB_DUMP="${OUTDIR}/db.sql"
+DB_GZ="${OUTDIR}/db.sql.gz"
 
-TAR_ITEMS=( "data" "docker-compose.yml" )
-if [[ -f "/home/${LINUX_USER}/.env" ]]; then
-  TAR_ITEMS+=( ".env" )
+# Try mysqldump first, then mariadb-dump
+if docker exec "${CONTAINER_DB_NAME}" sh -lc "command -v mysqldump >/dev/null 2>&1"; then
+  docker exec "${CONTAINER_DB_NAME}" sh -lc \
+    "mysqldump -uroot -p\"${MYSQL_ROOT_PASSWORD}\" --single-transaction --quick --routines --triggers \"${MYSQL_DATABASE}\"" \
+    > "${DB_DUMP}"
+else
+  docker exec "${CONTAINER_DB_NAME}" sh -lc \
+    "mariadb-dump -uroot -p\"${MYSQL_ROOT_PASSWORD}\" --single-transaction --quick --routines --triggers \"${MYSQL_DATABASE}\"" \
+    > "${DB_DUMP}"
 fi
 
-tar -czf "$ARCHIVE" \
-  --warning=no-file-changed \
-  --ignore-failed-read \
-  -C "/home/${LINUX_USER}" "${TAR_ITEMS[@]}"
-
-if [[ ! -f "$ARCHIVE" ]]; then
-  echo "Archive was not created: $ARCHIVE"
+gzip -9 "${DB_DUMP}"
+if [[ ! -f "${DB_GZ}" ]]; then
+  echo "DB dump failed: ${DB_GZ} not created"
   exit 1
 fi
 
-SIZE="$(file_size_bytes "$ARCHIVE")"
-if [[ "$SIZE" -lt 1024 ]]; then
+# Collect WP files (portable restore set)
+SITE_DIR="/home/${LINUX_USER}/data/site"
+WP_CONTENT="${SITE_DIR}/wp-content"
+WP_CONFIG="${SITE_DIR}/wp-config.php"
+HTACCESS="${SITE_DIR}/.htaccess"
+
+if [[ ! -d "${SITE_DIR}" ]]; then
+  echo "Missing site dir: ${SITE_DIR}"
+  exit 1
+fi
+
+if [[ -d "${WP_CONTENT}" ]]; then
+  log "Copying wp-content..."
+  mkdir -p "${OUTDIR}/wp-content"
+  rsync -a --delete "${WP_CONTENT}/" "${OUTDIR}/wp-content/"
+else
+  echo "Missing wp-content folder: ${WP_CONTENT}"
+  exit 1
+fi
+
+if [[ -f "${WP_CONFIG}" ]]; then
+  log "Including wp-config.php"
+  cp -f "${WP_CONFIG}" "${OUTDIR}/wp-config.php"
+fi
+
+if [[ -f "${HTACCESS}" ]]; then
+  log "Including .htaccess"
+  cp -f "${HTACCESS}" "${OUTDIR}/.htaccess"
+fi
+
+# Add a tiny manifest for sanity
+cat > "${OUTDIR}/manifest.json" <<EOF
+{
+  "created_at_utc": "${BACKUP_AT_UTC}",
+  "kind": "${KIND}",
+  "website_id": ${WEBSITE_ID},
+  "team_id": ${TEAM_ID},
+  "linux_user": "${LINUX_USER}",
+  "base_host": "${BASE_HOST}",
+  "object_key": "${OBJECT_KEY}",
+  "contains": [
+    "db.sql.gz",
+    "wp-content/",
+    "wp-config.php (if present)",
+    ".htaccess (if present)",
+    "manifest.json"
+  ]
+}
+EOF
+
+# Create archive
+log "Creating archive: ${ARCHIVE}"
+tar -czf "${ARCHIVE}" -C "${OUTDIR}" .
+
+if [[ ! -f "${ARCHIVE}" ]]; then
+  echo "Archive was not created: ${ARCHIVE}"
+  exit 1
+fi
+
+SIZE="$(file_size_bytes "${ARCHIVE}")"
+if [[ "$SIZE" -lt 10240 ]]; then
   echo "Archive looks too small (${SIZE} bytes) - refusing to upload"
   exit 1
 fi
@@ -294,19 +355,14 @@ log "  bucket:   s3://${BUCKET}"
 log "  object:   ${OBJECT_KEY}"
 log "  bytes:    ${SIZE}"
 
-aws_cp "$ARCHIVE" "s3://${BUCKET}/${OBJECT_KEY}"
+aws_cp "${ARCHIVE}" "s3://${BUCKET}/${OBJECT_KEY}"
 
-# Notify app (records backup row)
-export WEBSITE_ID
-export LINUX_USER
-export KIND
-export BUCKET
-export ENDPOINT_PATH
-export OBJECT_KEY
-export BYTES="$SIZE"
-export BACKUP_AT
+# Notify app to record in DB
+# Export vars needed by notify_app's python block
+export WEBSITE_ID TEAM_ID LINUX_USER KIND OBJECT_KEY BYTES="${SIZE}" BACKUP_AT="${BACKUP_AT_UTC}" \
+       BASE_HOST ENDPOINT_PATH BUCKET
 
-notify_app "$KIND" "$OBJECT_KEY" "$SIZE" "$BACKUP_AT"
+notify_app "${KIND}" "${OBJECT_KEY}" "${SIZE}" "${BACKUP_AT_UTC}" || true
 
 if [[ "$KEEP_LOCAL" -ne 1 ]]; then
   rm -rf "$WORKDIR"
@@ -317,9 +373,9 @@ fi
 echo ""
 log "Backup complete"
 echo "Timestamp:  ${HUMAN_TS} (UTC)"
+echo "Kind:       ${KIND}"
 echo "Website ID: ${WEBSITE_ID}"
 echo "Team ID:    ${TEAM_ID}"
 echo "Linux User: ${LINUX_USER}"
-echo "Kind:       ${KIND}"
 echo "Size:       ${SIZE} bytes"
 echo "Path:       ${OBJECT_KEY}"
