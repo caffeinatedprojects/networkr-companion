@@ -1,39 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------
-# Required args:
-#   --linux-user <linux-user>
-#
-# Optional:
-#   --env-file /home/<linux-user>/.env
-#   --snapshot
-#   --dry-run
-#   --keep-local
-#   --force
-#
-# Reads from site env (no renames):
-#   WEBSITE_ID
-#   TEAM_ID
-#   DAILY_BACKUPS_ENABLED
-#
-# Host-level env required for API notify (not stored per-site):
-#   SERVER_UID   (matches servers.uid)
-#   API_SECRET   (matches servers.api_secret)
-#
-# Optional host-level env:
-#   BASE_HOST=app.pressillion.co.uk   (no https)
-#   API_PATH=/api/v1/backups/complete
-#   BUCKET=caffeinated-media
-#   SPACES_ENDPOINT=https://ams3.digitaloceanspaces.com
-#   AWS_RUN_AS_USER=networkr
-# ------------------------------------------------------------------
-
-BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"          # no https
-API_PATH="${API_PATH:-/api/v1/backups/complete}"         # leading slash enforced below
+BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"   # no https
 BUCKET="${BUCKET:-caffeinated-media}"
 SPACES_ENDPOINT="${SPACES_ENDPOINT:-https://ams3.digitaloceanspaces.com}"
 AWS_RUN_AS_USER="${AWS_RUN_AS_USER:-networkr}"
+
+# API notify (host env)
+SERVER_UID="${SERVER_UID:-}"
+API_SECRET="${API_SECRET:-}"
+ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"
 
 LINUX_USER=""
 ENV_FILE=""
@@ -50,13 +26,12 @@ usage() {
   echo "  --linux-user    Linux user that owns the site (required)"
   echo "  --env-file      Path to site .env (defaults to /home/<linux-user>/.env)"
   echo "  --snapshot      Create snapshot (runs even if daily backups disabled)"
-  echo "  --dry-run       Build archive but do not upload or notify API"
+  echo "  --dry-run       Build archive but do not upload / notify"
   echo "  --keep-local    Do not delete local archive after upload"
   echo "  --force         Ignore DAILY_BACKUPS_ENABLED flag"
   echo ""
-  echo "Host env needed to notify app:"
-  echo "  SERVER_UID      Server uid as stored in Pressillion servers table"
-  echo "  API_SECRET      Server api_secret as stored in Pressillion servers table"
+  echo "Host env (for notify):"
+  echo "  SERVER_UID and API_SECRET (servers.api_secret) are required to notify the app"
 }
 
 log() {
@@ -87,6 +62,7 @@ aws_cp() {
     return 0
   fi
 
+  # If running as root, use networkr's AWS config/creds (where Spaces creds likely are)
   if [[ "$(id -u)" -eq 0 ]]; then
     if ! id -u "$AWS_RUN_AS_USER" >/dev/null 2>&1; then
       echo "AWS run-as user missing: ${AWS_RUN_AS_USER}"
@@ -103,16 +79,121 @@ aws_cp() {
 
 ensure_leading_slash() {
   local p="$1"
-  if [[ "${p:0:1}" != "/" ]]; then
-    echo "/${p}"
+  if [[ "${p}" == /* ]]; then
+    echo "$p"
   else
-    echo "${p}"
+    echo "/$p"
   fi
 }
 
-# ------------------------------------------------------------------
-# Args
-# ------------------------------------------------------------------
+notify_app() {
+  local kind="$1"         # daily|weekly|snapshot
+  local object_key="$2"
+  local bytes="$3"
+  local backup_at="$4"    # "YYYY-mm-dd HH:MM:SS"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Dry-run enabled: notify skipped"
+    return 0
+  fi
+
+  if [[ -z "$SERVER_UID" || -z "$API_SECRET" ]]; then
+    echo "Missing SERVER_UID or API_SECRET in host env (needed to notify app)."
+    echo "Example:"
+    echo "  export SERVER_UID=\"551676231\""
+    echo "  export API_SECRET=\"<servers.api_secret>\""
+    return 1
+  fi
+
+  local endpoint_path
+  endpoint_path="$(ensure_leading_slash "$ENDPOINT_PATH")"
+
+  local base_url="https://${BASE_HOST}"
+  local url="${base_url}${endpoint_path}"
+
+  TS="$(date +%s)"
+  export TS
+
+  log "Notifying app: ${url}"
+
+  # Build + sign exactly like the working test script
+  PY_OUT="$(python3 - <<'PY'
+import os, json, uuid, hashlib, hmac
+from datetime import datetime, timezone
+
+ts = int(os.environ["TS"])
+secret = os.environ["API_SECRET"].encode("utf-8")
+
+endpoint_path = os.environ.get("ENDPOINT_PATH", "/api/v1/backups/complete")
+if not endpoint_path.startswith("/"):
+    endpoint_path = "/" + endpoint_path
+
+website_id = int(os.environ["WEBSITE_ID"])
+linux_user = os.environ["LINUX_USER"]
+kind = os.environ["KIND"]
+storage_driver = "s3"
+storage_bucket = os.environ["BUCKET"]
+object_key = os.environ["OBJECT_KEY"]
+bytes_ = int(os.environ["BYTES"])
+backup_at = os.environ["BACKUP_AT"]
+
+payload = {
+  "website_id": website_id,
+  "website_linux_user": linux_user,
+  "kind": kind,
+  "storage_driver": storage_driver,
+  "storage_bucket": storage_bucket,
+  "object_key": object_key,
+  "bytes": bytes_,
+  "backup_at": backup_at,
+}
+
+body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+nonce = str(uuid.uuid4())
+
+canonical = "\n".join([
+  str(ts),
+  nonce,
+  "POST",
+  endpoint_path,
+  body_sha,
+])
+
+sig = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+print(body)
+print(body_sha)
+print(nonce)
+print(sig)
+PY
+)"
+
+  BODY="$(printf "%s" "$PY_OUT" | sed -n '1p')"
+  BODY_SHA="$(printf "%s" "$PY_OUT" | sed -n '2p')"
+  NONCE="$(printf "%s" "$PY_OUT" | sed -n '3p')"
+  SIG="$(printf "%s" "$PY_OUT" | sed -n '4p')"
+
+  log "Notify headers: ts=${TS} nonce=${NONCE} body_sha=${BODY_SHA}"
+
+  curl -sS -D /tmp/pressillion-notify-headers.txt -o /tmp/pressillion-notify-body.txt \
+    -X POST "${url}" \
+    -H "Accept: application/json" \
+    -H "Content-Type: application/json" \
+    -H "X-Pressillion-Server: ${SERVER_UID}" \
+    -H "X-Pressillion-Timestamp: ${TS}" \
+    -H "X-Pressillion-Nonce: ${NONCE}" \
+    -H "X-Pressillion-Signature: ${SIG}" \
+    --data "${BODY}"
+
+  HTTP_LINE="$(head -n1 /tmp/pressillion-notify-headers.txt || true)"
+  log "Notify response: ${HTTP_LINE}"
+
+  cat /tmp/pressillion-notify-body.txt
+  echo ""
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --linux-user) LINUX_USER="${2:-}"; shift 2 ;;
@@ -145,11 +226,7 @@ if [[ ! -d "/home/${LINUX_USER}" ]]; then
   exit 1
 fi
 
-API_PATH="$(ensure_leading_slash "$API_PATH")"
-
-# ------------------------------------------------------------------
 # Load site env
-# ------------------------------------------------------------------
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -170,28 +247,23 @@ if [[ "$DO_SNAPSHOT" -eq 0 && "${DAILY_BACKUPS_ENABLED:-0}" != "1" && "$FORCE" -
   exit 0
 fi
 
-# ------------------------------------------------------------------
-# Naming + paths
-# ------------------------------------------------------------------
 STAMP="$(date -u '+%Y%m%d-%H%M%S')"
 HUMAN_TS="$(date -u '+%Y-%m-%d %H:%M:%S')"
-BACKUP_AT="${HUMAN_TS}" # matches your API validator "date" format
+BACKUP_AT="${HUMAN_TS}"
 
 WORKDIR="/tmp/pressillion-${LINUX_USER}-${STAMP}"
 ARCHIVE="${WORKDIR}/archive.tar.gz"
+
 mkdir -p "$WORKDIR"
 
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
   KIND="snapshot"
-  SPACES_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
+  OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
 else
   KIND="daily"
-  SPACES_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
+  OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
 fi
 
-# ------------------------------------------------------------------
-# Create archive
-# ------------------------------------------------------------------
 log "Creating archive: $ARCHIVE"
 log "Source: /home/${LINUX_USER} (data, docker-compose.yml, .env if present)"
 
@@ -216,125 +288,26 @@ if [[ "$SIZE" -lt 1024 ]]; then
   exit 1
 fi
 
-# ------------------------------------------------------------------
-# Upload to Spaces
-# ------------------------------------------------------------------
 log "Uploading to Spaces:"
 log "  endpoint: ${SPACES_ENDPOINT}"
 log "  bucket:   s3://${BUCKET}"
-log "  object:   ${SPACES_KEY}"
+log "  object:   ${OBJECT_KEY}"
 log "  bytes:    ${SIZE}"
 
-aws_cp "$ARCHIVE" "s3://${BUCKET}/${SPACES_KEY}"
+aws_cp "$ARCHIVE" "s3://${BUCKET}/${OBJECT_KEY}"
 
-# ------------------------------------------------------------------
-# Notify Pressillion API (record in DB)
-# ------------------------------------------------------------------
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  log "Dry-run enabled: API notify skipped"
-else
-  if [[ -z "${SERVER_UID:-}" || -z "${API_SECRET:-}" ]]; then
-    echo "Missing SERVER_UID or API_SECRET in host env (needed to notify app)."
-    echo "Example:"
-    echo "  export SERVER_UID=\"551676231\""
-    echo "  export API_SECRET=\"<servers.api_secret>\""
-    exit 1
-  fi
+# Notify app (records backup row)
+export WEBSITE_ID
+export LINUX_USER
+export KIND
+export BUCKET
+export ENDPOINT_PATH
+export OBJECT_KEY
+export BYTES="$SIZE"
+export BACKUP_AT
 
-  # API object_key wants: {kind}/{team_id}/{linux_user}/backup_{YYYYMMDD-HHmmss}.tar.zst
-  # BUT your ingest controller *validates* that format. We are recording our tar.gz archive path in Spaces.
-  # So for ingest, we must either:
-  #  - (A) change ingest validation to accept tar.gz + your archive/... format, OR
-  #  - (B) report an object_key that matches existing ingest format and make the uploader match it.
-  #
-  # You said: "save path" and you want the Spaces path in the record.
-  # So we send storage_bucket + object_key as the Spaces key we actually uploaded.
-  #
-  # IMPORTANT: that means your controller validation must be updated to accept this archive path.
-  #
-  # For now we send kind as 'snapshot' or 'daily' (existing enum accepts snapshot/daily/weekly in your earlier work).
-  # If your controller expects daily/weekly/snapshot, we're good.
-  #
+notify_app "$KIND" "$OBJECT_KEY" "$SIZE" "$BACKUP_AT"
 
-  TS="$(date +%s)"
-
-  PY_OUT="$(python3 - <<'PY'
-import os, json, uuid, hashlib, hmac
-
-ts = int(os.environ["TS"])
-secret = os.environ["API_SECRET"].encode("utf-8")
-path = os.environ["API_PATH"]
-if not path.startswith("/"):
-    path = "/" + path
-
-payload = {
-  "website_id": int(os.environ["WEBSITE_ID"]),
-  "website_linux_user": os.environ["LINUX_USER"],
-  "kind": os.environ["KIND"],
-  "storage_driver": "s3",
-  "storage_bucket": os.environ["BUCKET"],
-  "object_key": os.environ["SPACES_KEY"],
-  "bytes": int(os.environ["SIZE"]),
-  "backup_at": os.environ["BACKUP_AT"],
-}
-
-body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
-nonce = str(uuid.uuid4())
-
-canonical = "\n".join([
-  str(ts),
-  nonce,
-  "POST",
-  path,
-  body_sha,
-])
-
-sig = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
-
-print(body)
-print(body_sha)
-print(nonce)
-print(sig)
-PY
-)"
-
-  BODY="$(printf "%s" "$PY_OUT" | sed -n '1p')"
-  BODY_SHA="$(printf "%s" "$PY_OUT" | sed -n '2p')"
-  NONCE="$(printf "%s" "$PY_OUT" | sed -n '3p')"
-  SIG="$(printf "%s" "$PY_OUT" | sed -n '4p')"
-
-  URL="https://${BASE_HOST}${API_PATH}"
-
-  log "Notifying Pressillion API:"
-  log "  url:  ${URL}"
-  log "  ts:   ${TS}"
-  log "  sha:  ${BODY_SHA}"
-
-  # Export for python block already run
-  RESPONSE="$(
-    curl -sS -D /tmp/pressillion-api-headers.txt -o /tmp/pressillion-api-body.txt -X POST "${URL}" \
-      -H "Accept: application/json" \
-      -H "Content-Type: application/json" \
-      -H "X-Pressillion-Server: ${SERVER_UID}" \
-      -H "X-Pressillion-Timestamp: ${TS}" \
-      -H "X-Pressillion-Nonce: ${NONCE}" \
-      -H "X-Pressillion-Signature: ${SIG}" \
-      --data "${BODY}" \
-      || true
-  )"
-
-  HTTP_CODE="$(awk 'NR==1{print $2}' /tmp/pressillion-api-headers.txt 2>/dev/null || echo "")"
-  log "API HTTP: ${HTTP_CODE:-unknown}"
-
-  log "API response body:"
-  cat /tmp/pressillion-api-body.txt
-  echo ""
-fi
-
-# ------------------------------------------------------------------
-# Cleanup
-# ------------------------------------------------------------------
 if [[ "$KEEP_LOCAL" -ne 1 ]]; then
   rm -rf "$WORKDIR"
 else
@@ -349,4 +322,4 @@ echo "Team ID:    ${TEAM_ID}"
 echo "Linux User: ${LINUX_USER}"
 echo "Kind:       ${KIND}"
 echo "Size:       ${SIZE} bytes"
-echo "Spaces Key: ${SPACES_KEY}"
+echo "Path:       ${OBJECT_KEY}"
