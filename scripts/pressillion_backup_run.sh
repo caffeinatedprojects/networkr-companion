@@ -4,7 +4,9 @@ set -euo pipefail
 # ------------------------------------------------------------------
 # Required:
 #   --linux-user
-#   --env-file
+#
+# Optional:
+#   --env-file (defaults to /home/<linux-user>/.env)
 #
 # Uses existing env vars inside site env:
 #   WEBSITE_ID
@@ -70,13 +72,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$LINUX_USER" || -z "$ENV_FILE" ]]; then
+if [[ -z "${LINUX_USER}" ]]; then
   usage
   exit 1
 fi
 
+# Default env-file if not supplied
+if [[ -z "${ENV_FILE}" ]]; then
+  ENV_FILE="/home/${LINUX_USER}/.env"
+fi
+
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE"
+  exit 1
+fi
+
+if [[ ! -d "/home/${LINUX_USER}" ]]; then
+  echo "Linux user home not found: /home/${LINUX_USER}"
   exit 1
 fi
 
@@ -109,11 +121,6 @@ ARCHIVE="${WORKDIR}/archive.tar.gz"
 
 mkdir -p "$WORKDIR"
 
-if [[ ! -d "/home/${LINUX_USER}" ]]; then
-  echo "Linux user home not found: /home/${LINUX_USER}"
-  exit 1
-fi
-
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
   OBJECT_KEY="archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
 else
@@ -125,7 +132,6 @@ log "Source: /home/${LINUX_USER} (data, docker-compose.yml, .env if present)"
 
 # Create archive.
 # - include .env only if present
-# - tar warnings shouldn't fail the whole run
 TAR_ITEMS=( "data" "docker-compose.yml" )
 if [[ -f "/home/${LINUX_USER}/.env" ]]; then
   TAR_ITEMS+=( ".env" )
