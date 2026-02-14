@@ -27,7 +27,15 @@ FORCE=0
 
 usage() {
   echo "Usage:"
-  echo "  $0 --linux-user kronankreative-20 --env-file /home/kronankreative-20/.env [--snapshot] [--dry-run] [--keep-local] [--force]"
+  echo "  $0 --linux-user <linux-user> [--env-file /home/<linux-user>/.env] [--snapshot] [--dry-run] [--keep-local] [--force]"
+  echo ""
+  echo "Options:"
+  echo "  --linux-user    Linux user that owns the site (required)"
+  echo "  --env-file      Path to site .env (defaults to /home/<linux-user>/.env)"
+  echo "  --snapshot      Create snapshot (runs even if daily backups disabled)"
+  echo "  --dry-run       Build archive but do not upload"
+  echo "  --keep-local    Do not delete local archive after upload"
+  echo "  --force         Ignore DAILY_BACKUPS_ENABLED flag"
 }
 
 log() {
@@ -93,8 +101,8 @@ if [[ "$DO_SNAPSHOT" -eq 0 && "${DAILY_BACKUPS_ENABLED:-0}" != "1" && "$FORCE" -
   exit 0
 fi
 
-DATE="$(date -u '+%Y-%m-%d')"
 STAMP="$(date -u '+%Y%m%d-%H%M%S')"
+HUMAN_TS="$(date -u '+%Y-%m-%d %H:%M:%S')"
 
 WORKDIR="/tmp/pressillion-${LINUX_USER}-${STAMP}"
 ARCHIVE="${WORKDIR}/archive.tar.gz"
@@ -107,9 +115,9 @@ if [[ ! -d "/home/${LINUX_USER}" ]]; then
 fi
 
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
-  OBJECT_KEY="archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${DATE}.tar.gz"
+  OBJECT_KEY="archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
 else
-  OBJECT_KEY="archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${DATE}.tar.gz"
+  OBJECT_KEY="archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
 fi
 
 log "Creating archive: $ARCHIVE"
@@ -157,6 +165,7 @@ fi
 
 echo ""
 log "Backup complete"
+echo "Timestamp:  ${HUMAN_TS} (UTC)"
 echo "Website ID: ${WEBSITE_ID}"
 echo "Team ID:    ${TEAM_ID}"
 echo "Linux User: ${LINUX_USER}"
