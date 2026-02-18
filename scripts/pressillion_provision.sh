@@ -147,7 +147,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Backups schedule (per-server daily, jittered). First run after 6 hours.
+# Backups schedule (per-server daily, jittered). First run after 6 hours (PERSISTENT).
 # ------------------------------------------------------------------------------
 log "Setting up per-server daily backups timer"
 
@@ -202,15 +202,53 @@ Unit=pressillion-backups.service
 WantedBy=timers.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now pressillion-backups.timer
+# ---- First run timer (persistent) ----
+# Runs once, 6 hours after BOOT. If the server is off when it should have fired,
+# it will run on next boot (because Persistent=true). It then disables itself.
+sudo tee /etc/systemd/system/pressillion-backups-first-run.service >/dev/null <<'EOF'
+[Unit]
+Description=Pressillion backups first-run (one-shot kickoff)
+Wants=network-online.target
+After=network-online.target
 
-log "Scheduling first backups run 6 hours after provisioning"
-sudo systemd-run --unit=pressillion-backups-first-run --on-active=6h /bin/bash -lc '
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+ExecStart=/bin/bash -lc '
+  set -euo pipefail
+
+  echo "[pressillion-backups-first-run] starting pressillion-backups.service..."
   systemctl start pressillion-backups.service
-' >/dev/null 2>&1 || true
 
-log "Backups timer installed OK"
+  echo "[pressillion-backups-first-run] disabling first-run timer (one-shot complete)..."
+  systemctl disable --now pressillion-backups-first-run.timer >/dev/null 2>&1 || true
+'
+EOF
+
+sudo tee /etc/systemd/system/pressillion-backups-first-run.timer >/dev/null <<'EOF'
+[Unit]
+Description=Pressillion backups first-run timer (6h after boot, persistent)
+
+[Timer]
+OnBootSec=6h
+Persistent=true
+
+Unit=pressillion-backups-first-run.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+
+sudo systemctl enable --now pressillion-backups.timer
+sudo systemctl enable --now pressillion-backups-first-run.timer
+
+log "Backups timers installed OK"
+log "  Daily:      pressillion-backups.timer (with jitter)"
+log "  First-run:  pressillion-backups-first-run.timer (6h after boot, persistent, self-disabling)"
 
 # ------------------------------------------------------------------------------
 # Optional: create sudo user (private servers)
