@@ -14,6 +14,8 @@ CREATE_SUDO=0
 SUDO_USER=""
 SUDO_PASS=""
 API_SECRET=""
+SERVER_UID=""
+BASE_HOST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +35,14 @@ while [[ $# -gt 0 ]]; do
       API_SECRET="${2:-}"
       shift 2
       ;;
+    --server-uid)
+      SERVER_UID="${2:-}"
+      shift 2
+      ;;
+    --base-host)
+      BASE_HOST="${2:-}"
+      shift 2
+      ;;
     *)
       log "WARN: ignoring unknown arg: $1"
       shift
@@ -44,6 +54,14 @@ log "START create_sudo=${CREATE_SUDO}"
 
 if [[ -z "${API_SECRET}" ]]; then
   fail "Missing --api-secret"
+fi
+
+if [[ -z "${SERVER_UID}" ]]; then
+  fail "Missing --server-uid"
+fi
+
+if [[ -z "${BASE_HOST}" ]]; then
+  fail "Missing --base-host"
 fi
 
 if [[ "${CREATE_SUDO}" == "1" ]]; then
@@ -84,23 +102,17 @@ ENV_FILE="/home/networkr/networkr-companion/.env"
 
 log "Ensuring env file exists: ${ENV_FILE}"
 
-# Ensure directory exists
 mkdir -p "/home/networkr/networkr-companion"
 
-# Create file if missing
 if [[ ! -f "${ENV_FILE}" ]]; then
   touch "${ENV_FILE}"
 fi
 
-# Ensure ownership (if script was ever run with sudo in past)
-# This is safe even if it already is correct.
 if command -v sudo >/dev/null 2>&1; then
   sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
 fi
 
-# Ensure writable
 if [[ ! -w "${ENV_FILE}" ]]; then
-  # attempt to fix perms (if needed)
   if command -v sudo >/dev/null 2>&1; then
     sudo chmod 600 "${ENV_FILE}" 2>/dev/null || true
     sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
@@ -111,22 +123,94 @@ if [[ ! -w "${ENV_FILE}" ]]; then
   fail "Env file not writable: ${ENV_FILE}"
 fi
 
-log "Updating PRESSILLION_API_SECRET in ${ENV_FILE}"
+set_kv() {
+  local k="$1"
+  local v="$2"
 
-# Replace if exists, else append (no duplicates)
-if grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}"; then
-  # Use sed in-place compatible with GNU sed (Linux)
-  sed -i "s|^PRESSILLION_API_SECRET=.*|PRESSILLION_API_SECRET=${API_SECRET}|" "${ENV_FILE}"
-else
-  echo "PRESSILLION_API_SECRET=${API_SECRET}" >> "${ENV_FILE}"
-fi
+  if grep -qE "^${k}=" "${ENV_FILE}"; then
+    sed -i "s|^${k}=.*|${k}=${v}|" "${ENV_FILE}"
+  else
+    echo "${k}=${v}" >> "${ENV_FILE}"
+  fi
+}
 
-# Confirm write happened (don’t print secret)
-if grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}"; then
+log "Updating Pressillion runtime keys in ${ENV_FILE}"
+
+set_kv "PRESSILLION_API_SECRET" "${API_SECRET}"
+set_kv "PRESSILLION_SERVER_UID" "${SERVER_UID}"
+set_kv "PRESSILLION_BASE_HOST" "${BASE_HOST}"
+
+if grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}" && grep -qE '^PRESSILLION_SERVER_UID=' "${ENV_FILE}" && grep -qE '^PRESSILLION_BASE_HOST=' "${ENV_FILE}"; then
   log "Env updated OK"
 else
-  fail "Env update failed (key not found after write)"
+  fail "Env update failed (one or more keys missing after write)"
 fi
+
+# ------------------------------------------------------------------------------
+# Backups schedule (per-server daily, jittered). First run after 6 hours.
+# ------------------------------------------------------------------------------
+log "Setting up per-server daily backups timer"
+
+BACKUP_ALL_SCRIPT="/home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
+
+if [[ ! -f "${BACKUP_ALL_SCRIPT}" ]]; then
+  fail "Missing backup script: ${BACKUP_ALL_SCRIPT}"
+fi
+
+sudo tee /etc/systemd/system/pressillion-backups.service >/dev/null <<'EOF'
+[Unit]
+Description=Pressillion backups (all eligible sites on this server)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/home/networkr/networkr-companion/.env
+
+ExecStart=/bin/bash -lc '
+  set -euo pipefail
+
+  export BASE_HOST="${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}"
+  export SERVER_UID="${PRESSILLION_SERVER_UID:-}"
+  export API_SECRET="${PRESSILLION_API_SECRET:-}"
+
+  if [ -z "${SERVER_UID}" ] || [ -z "${API_SECRET}" ]; then
+    echo "[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping)."
+    exit 0
+  fi
+
+  /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh
+'
+EOF
+
+sudo tee /etc/systemd/system/pressillion-backups.timer >/dev/null <<'EOF'
+[Unit]
+Description=Pressillion backups timer (daily, per-server jitter)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+# 2h jitter window per server, per day.
+RandomizedDelaySec=7200
+
+Unit=pressillion-backups.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now pressillion-backups.timer
+
+log "Scheduling first backups run 6 hours after provisioning"
+sudo systemd-run --unit=pressillion-backups-first-run --on-active=6h /bin/bash -lc '
+  systemctl start pressillion-backups.service
+' >/dev/null 2>&1 || true
+
+log "Backups timer installed OK"
 
 # ------------------------------------------------------------------------------
 # Optional: create sudo user (private servers)
