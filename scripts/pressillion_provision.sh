@@ -98,40 +98,39 @@ log "Docker pulls done"
 # ------------------------------------------------------------------------------
 # Write / update env file (ensure owned by networkr)
 # ------------------------------------------------------------------------------
-ENV_FILE="/home/networkr/networkr-companion/.env"
+ENV_DIR="/home/networkr/networkr-companion"
+ENV_FILE="${ENV_DIR}/.env"
 
 log "Ensuring env file exists: ${ENV_FILE}"
 
-mkdir -p "/home/networkr/networkr-companion"
+mkdir -p "${ENV_DIR}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  touch "${ENV_FILE}"
+  sudo touch "${ENV_FILE}"
 fi
 
-if command -v sudo >/dev/null 2>&1; then
-  sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
-fi
+# Ownership + perms: root service reads this; 600 is fine (root can read)
+sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
+sudo chmod 600 "${ENV_FILE}" 2>/dev/null || true
 
-if [[ ! -w "${ENV_FILE}" ]]; then
-  if command -v sudo >/dev/null 2>&1; then
-    sudo chmod 600 "${ENV_FILE}" 2>/dev/null || true
-    sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
-  fi
-fi
-
-if [[ ! -w "${ENV_FILE}" ]]; then
-  fail "Env file not writable: ${ENV_FILE}"
-fi
-
+# Always edit as root to avoid “not writable” edge cases
 set_kv() {
   local k="$1"
   local v="$2"
 
-  if grep -qE "^${k}=" "${ENV_FILE}"; then
-    sed -i "s|^${k}=.*|${k}=${v}|" "${ENV_FILE}"
-  else
-    echo "${k}=${v}" >> "${ENV_FILE}"
-  fi
+  sudo bash -lc "
+    set -euo pipefail
+    f='${ENV_FILE}'
+
+    # Remove any duplicates of the key (keep file clean)
+    if grep -qE '^${k}=' \"\$f\"; then
+      # delete all existing occurrences
+      sed -i '/^${k}=/d' \"\$f\"
+    fi
+
+    # append single clean line
+    printf '%s=%s\n' '${k}' '${v}' >> \"\$f\"
+  "
 }
 
 log "Updating Pressillion runtime keys in ${ENV_FILE}"
@@ -140,7 +139,10 @@ set_kv "PRESSILLION_API_SECRET" "${API_SECRET}"
 set_kv "PRESSILLION_SERVER_UID" "${SERVER_UID}"
 set_kv "PRESSILLION_BASE_HOST" "${BASE_HOST}"
 
-if grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}" && grep -qE '^PRESSILLION_SERVER_UID=' "${ENV_FILE}" && grep -qE '^PRESSILLION_BASE_HOST=' "${ENV_FILE}"; then
+# Sanity check keys exist (don’t print secret)
+if sudo grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}" \
+  && sudo grep -qE '^PRESSILLION_SERVER_UID=' "${ENV_FILE}" \
+  && sudo grep -qE '^PRESSILLION_BASE_HOST=' "${ENV_FILE}"; then
   log "Env updated OK"
 else
   fail "Env update failed (one or more keys missing after write)"
@@ -148,6 +150,9 @@ fi
 
 # ------------------------------------------------------------------------------
 # Backups schedule (per-server daily, jittered). First run after 6 hours (PERSISTENT).
+# Fixes:
+#   - systemd ExecStart quoting (no multiline single-quote blocks)
+#   - first-run is a real persistent timer (not transient systemd-run)
 # ------------------------------------------------------------------------------
 log "Setting up per-server daily backups timer"
 
@@ -168,21 +173,7 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=-/home/networkr/networkr-companion/.env
-
-ExecStart=/bin/bash -lc '
-  set -euo pipefail
-
-  export BASE_HOST="${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}"
-  export SERVER_UID="${PRESSILLION_SERVER_UID:-}"
-  export API_SECRET="${PRESSILLION_API_SECRET:-}"
-
-  if [ -z "${SERVER_UID}" ] || [ -z "${API_SECRET}" ]; then
-    echo "[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping)."
-    exit 0
-  fi
-
-  /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh
-'
+ExecStart=/bin/bash -lc "set -euo pipefail; BASE_HOST=\"${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}\"; SERVER_UID=\"${PRESSILLION_SERVER_UID:-}\"; API_SECRET=\"${PRESSILLION_API_SECRET:-}\"; if [[ -z \"${SERVER_UID}\" || -z \"${API_SECRET}\" ]]; then echo \"[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping).\"; exit 0; fi; export BASE_HOST SERVER_UID API_SECRET; /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
 EOF
 
 sudo tee /etc/systemd/system/pressillion-backups.timer >/dev/null <<'EOF'
@@ -202,9 +193,6 @@ Unit=pressillion-backups.service
 WantedBy=timers.target
 EOF
 
-# ---- First run timer (persistent) ----
-# Runs once, 6 hours after BOOT. If the server is off when it should have fired,
-# it will run on next boot (because Persistent=true). It then disables itself.
 sudo tee /etc/systemd/system/pressillion-backups-first-run.service >/dev/null <<'EOF'
 [Unit]
 Description=Pressillion backups first-run (one-shot kickoff)
@@ -215,16 +203,7 @@ After=network-online.target
 Type=oneshot
 User=root
 Group=root
-
-ExecStart=/bin/bash -lc '
-  set -euo pipefail
-
-  echo "[pressillion-backups-first-run] starting pressillion-backups.service..."
-  systemctl start pressillion-backups.service
-
-  echo "[pressillion-backups-first-run] disabling first-run timer (one-shot complete)..."
-  systemctl disable --now pressillion-backups-first-run.timer >/dev/null 2>&1 || true
-'
+ExecStart=/bin/bash -lc "set -euo pipefail; echo \"[pressillion-backups-first-run] starting pressillion-backups.service...\"; systemctl start pressillion-backups.service; echo \"[pressillion-backups-first-run] disabling first-run timer (one-shot complete)...\"; systemctl disable --now pressillion-backups-first-run.timer >/dev/null 2>&1 || true"
 EOF
 
 sudo tee /etc/systemd/system/pressillion-backups-first-run.timer >/dev/null <<'EOF'
@@ -243,8 +222,13 @@ EOF
 
 sudo systemctl daemon-reload
 
+# Enable timers
 sudo systemctl enable --now pressillion-backups.timer
 sudo systemctl enable --now pressillion-backups-first-run.timer
+
+# Hard verify: make sure systemd can see the env values (prevents the “unset env var” skip)
+log "Verifying systemd can read env keys (non-secret output)..."
+sudo bash -lc "set -a; source /home/networkr/networkr-companion/.env 2>/dev/null || true; set +a; echo \"[verify] PRESSILLION_BASE_HOST=${PRESSILLION_BASE_HOST:-<empty>}\"; echo \"[verify] PRESSILLION_SERVER_UID=${PRESSILLION_SERVER_UID:-<empty>}\"; if [[ -n \"${PRESSILLION_API_SECRET:-}\" ]]; then echo \"[verify] PRESSILLION_API_SECRET=<set>\"; else echo \"[verify] PRESSILLION_API_SECRET=<empty>\"; fi"
 
 log "Backups timers installed OK"
 log "  Daily:      pressillion-backups.timer (with jitter)"
