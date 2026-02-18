@@ -103,7 +103,7 @@ ENV_FILE="${ENV_DIR}/.env"
 
 log "Ensuring env file exists: ${ENV_FILE}"
 
-mkdir -p "${ENV_DIR}"
+sudo mkdir -p "${ENV_DIR}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   sudo touch "${ENV_FILE}"
@@ -113,7 +113,6 @@ fi
 sudo chown networkr:networkr "${ENV_FILE}" 2>/dev/null || true
 sudo chmod 600 "${ENV_FILE}" 2>/dev/null || true
 
-# Always edit as root to avoid “not writable” edge cases
 set_kv() {
   local k="$1"
   local v="$2"
@@ -122,13 +121,10 @@ set_kv() {
     set -euo pipefail
     f='${ENV_FILE}'
 
-    # Remove any duplicates of the key (keep file clean)
     if grep -qE '^${k}=' \"\$f\"; then
-      # delete all existing occurrences
       sed -i '/^${k}=/d' \"\$f\"
     fi
 
-    # append single clean line
     printf '%s=%s\n' '${k}' '${v}' >> \"\$f\"
   "
 }
@@ -139,7 +135,6 @@ set_kv "PRESSILLION_API_SECRET" "${API_SECRET}"
 set_kv "PRESSILLION_SERVER_UID" "${SERVER_UID}"
 set_kv "PRESSILLION_BASE_HOST" "${BASE_HOST}"
 
-# Sanity check keys exist (don’t print secret)
 if sudo grep -qE '^PRESSILLION_API_SECRET=' "${ENV_FILE}" \
   && sudo grep -qE '^PRESSILLION_SERVER_UID=' "${ENV_FILE}" \
   && sudo grep -qE '^PRESSILLION_BASE_HOST=' "${ENV_FILE}"; then
@@ -149,18 +144,32 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Backups schedule (per-server daily, jittered). First run after 6 hours (PERSISTENT).
-# Fixes:
-#   - systemd ExecStart quoting (no multiline single-quote blocks)
-#   - first-run is a real persistent timer (not transient systemd-run)
+# Ensure backup scripts are runnable (fixes "Permission denied" / status=126)
 # ------------------------------------------------------------------------------
-log "Setting up per-server daily backups timer"
+log "Ensuring backup scripts are executable"
 
 BACKUP_ALL_SCRIPT="/home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
+BACKUP_RUN_SCRIPT="/home/networkr/networkr-companion/scripts/pressillion_backup_run.sh"
 
 if [[ ! -f "${BACKUP_ALL_SCRIPT}" ]]; then
   fail "Missing backup script: ${BACKUP_ALL_SCRIPT}"
 fi
+
+if [[ ! -f "${BACKUP_RUN_SCRIPT}" ]]; then
+  fail "Missing backup script: ${BACKUP_RUN_SCRIPT}"
+fi
+
+sudo chmod 0755 "${BACKUP_ALL_SCRIPT}" "${BACKUP_RUN_SCRIPT}" 2>/dev/null || true
+sudo chown networkr:networkr "${BACKUP_ALL_SCRIPT}" "${BACKUP_RUN_SCRIPT}" 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# Backups schedule (per-server daily, jittered). First run after 6 hours (PERSISTENT).
+# Fixes:
+#   - systemd ExecStart quoting (no multiline single-quote blocks)
+#   - first-run is a real persistent timer (not transient systemd-run)
+#   - service calls /bin/bash explicitly (works even if +x is missing)
+# ------------------------------------------------------------------------------
+log "Setting up per-server daily backups timer"
 
 sudo tee /etc/systemd/system/pressillion-backups.service >/dev/null <<'EOF'
 [Unit]
@@ -173,7 +182,9 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=-/home/networkr/networkr-companion/.env
-ExecStart=/bin/bash -lc "set -euo pipefail; BASE_HOST=\"${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}\"; SERVER_UID=\"${PRESSILLION_SERVER_UID:-}\"; API_SECRET=\"${PRESSILLION_API_SECRET:-}\"; if [[ -z \"${SERVER_UID}\" || -z \"${API_SECRET}\" ]]; then echo \"[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping).\"; exit 0; fi; export BASE_HOST SERVER_UID API_SECRET; /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
+
+# Do NOT reference undefined vars in the unit (systemd warns). Use the PRESSILLION_* names only.
+ExecStart=/bin/bash -lc "set -euo pipefail; if [[ -z \"${PRESSILLION_SERVER_UID:-}\" || -z \"${PRESSILLION_API_SECRET:-}\" ]]; then echo \"[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping).\"; exit 0; fi; export BASE_HOST=\"${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}\"; export SERVER_UID=\"${PRESSILLION_SERVER_UID}\"; export API_SECRET=\"${PRESSILLION_API_SECRET}\"; /bin/bash /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
 EOF
 
 sudo tee /etc/systemd/system/pressillion-backups.timer >/dev/null <<'EOF'
@@ -222,13 +233,13 @@ EOF
 
 sudo systemctl daemon-reload
 
-# Enable timers
 sudo systemctl enable --now pressillion-backups.timer
 sudo systemctl enable --now pressillion-backups-first-run.timer
 
-# Hard verify: make sure systemd can see the env values (prevents the “unset env var” skip)
-log "Verifying systemd can read env keys (non-secret output)..."
-sudo bash -lc "set -a; source /home/networkr/networkr-companion/.env 2>/dev/null || true; set +a; echo \"[verify] PRESSILLION_BASE_HOST=${PRESSILLION_BASE_HOST:-<empty>}\"; echo \"[verify] PRESSILLION_SERVER_UID=${PRESSILLION_SERVER_UID:-<empty>}\"; if [[ -n \"${PRESSILLION_API_SECRET:-}\" ]]; then echo \"[verify] PRESSILLION_API_SECRET=<set>\"; else echo \"[verify] PRESSILLION_API_SECRET=<empty>\"; fi"
+# Optional: prove it will run by doing a safe dry-run immediate start (won't upload if no eligible sites)
+# Comment out if you don't want any immediate run at provision time.
+log "Sanity: starting pressillion-backups.service once (safe; will skip if no sites / no creds)"
+sudo systemctl start pressillion-backups.service || true
 
 log "Backups timers installed OK"
 log "  Daily:      pressillion-backups.timer (with jitter)"
