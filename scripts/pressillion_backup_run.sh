@@ -226,9 +226,9 @@ mkdir -p "$OUTDIR"
 
 # Upload location in Spaces (your desired "app/stage host prefix")
 if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
-  S3_OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
+  S3_OBJECT_KEY="${BASE_HOST}/archive/snapshots/${TEAM_ID}/${WEBSITE_ID}/${LINUX_USER}/snapshot-${STAMP}.tar.gz"
 else
-  S3_OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${TEAM_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
+  S3_OBJECT_KEY="${BASE_HOST}/archive/backups/${TEAM_ID}/${WEBSITE_ID}/${LINUX_USER}/backup-${STAMP}.tar.gz"
 fi
 
 # API object key (MUST match Laravel validation prefix)
@@ -240,7 +240,7 @@ if [[ "$DO_SNAPSHOT" -eq 1 ]]; then
 else
   API_KIND="daily"
 fi
-API_OBJECT_KEY="${API_KIND}/${TEAM_ID}/${LINUX_USER}/backup_${STAMP}.tar.zst"
+API_OBJECT_KEY="${S3_OBJECT_KEY}"
 
 log "Exporting DB from container: ${CONTAINER_DB_NAME}"
 log "  database: ${MYSQL_DATABASE}"
