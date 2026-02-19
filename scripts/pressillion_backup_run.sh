@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_HOST="${BASE_HOST:-app.pressillion.co.uk}"               # no https
+BASE_HOST="${BASE_HOST:-app.pressillion.com}"               # no https
 ENDPOINT_PATH="${ENDPOINT_PATH:-/api/v1/backups/complete}"
 BUCKET="${BUCKET:-caffeinated-media}"
 SPACES_ENDPOINT="${SPACES_ENDPOINT:-https://ams3.digitaloceanspaces.com}"

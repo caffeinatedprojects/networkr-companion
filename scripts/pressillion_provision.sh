@@ -184,7 +184,7 @@ Group=root
 EnvironmentFile=-/home/networkr/networkr-companion/.env
 
 # Do NOT reference undefined vars in the unit (systemd warns). Use the PRESSILLION_* names only.
-ExecStart=/bin/bash -lc "set -euo pipefail; if [[ -z \"${PRESSILLION_SERVER_UID:-}\" || -z \"${PRESSILLION_API_SECRET:-}\" ]]; then echo \"[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping).\"; exit 0; fi; export BASE_HOST=\"${PRESSILLION_BASE_HOST:-app.pressillion.co.uk}\"; export SERVER_UID=\"${PRESSILLION_SERVER_UID}\"; export API_SECRET=\"${PRESSILLION_API_SECRET}\"; /bin/bash /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
+ExecStart=/bin/bash -lc "set -euo pipefail; if [[ -z \"${PRESSILLION_SERVER_UID:-}\" || -z \"${PRESSILLION_API_SECRET:-}\" ]]; then echo \"[pressillion-backups] Missing PRESSILLION_SERVER_UID or PRESSILLION_API_SECRET (skipping).\"; exit 0; fi; export BASE_HOST=\"${PRESSILLION_BASE_HOST:-app.pressillion.com}\"; export SERVER_UID=\"${PRESSILLION_SERVER_UID}\"; export API_SECRET=\"${PRESSILLION_API_SECRET}\"; /bin/bash /home/networkr/networkr-companion/scripts/pressillion_backup_all.sh"
 EOF
 
 sudo tee /etc/systemd/system/pressillion-backups.timer >/dev/null <<'EOF'

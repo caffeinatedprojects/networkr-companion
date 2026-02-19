@@ -15,7 +15,7 @@ set -euo pipefail
 #   --env-file NAME  Use a non-standard env filename (default: .env)
 #
 # Host env (for API notify / DB record):
-#   BASE_HOST   (default app.pressillion.co.uk)
+#   BASE_HOST   (default app.pressillion.com)
 #   SERVER_UID
 #   API_SECRET
 # ------------------------------------------------------------------
@@ -93,7 +93,7 @@ get_env_value() {
 }
 
 log "Starting bulk backup run..."
-log "BASE_HOST: ${BASE_HOST:-app.pressillion.co.uk}"
+log "BASE_HOST: ${BASE_HOST:-app.pressillion.com}"
 log "ENV file:  ${ENV_FILENAME}"
 log "Mode:      $([[ "$DO_SNAPSHOT" -eq 1 ]] && echo snapshot || echo backup)"
 log "Force:     $FORCE"
